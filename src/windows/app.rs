@@ -189,7 +189,7 @@ fn set_card_width() -> bool {
         GetClientRect(a.view, &mut rc);
         let dpi = GetDpiForWindow(a.view).max(96) as usize;
         // The chat zooms its layout, so cards are sized in unzoomed twips to still fill the window exactly.
-        let tw = ((rc.right.max(0) as usize).saturating_sub(24 * dpi / 96) * 1440 / dpi) * 100 / a.cfg.chat_zoom.max(1) as usize;
+        let tw = ((rc.right.max(0) as usize).saturating_sub((24 + RIGHT_PAD as usize) * dpi / 96) * 1440 / dpi) * 100 / a.cfg.chat_zoom.max(1) as usize;
         rtf::set_table_scroll(!a.cfg.wrap_tables);
         // The sideways scroll bar exists only when tables keep their width.
         let style = GetWindowLongW(a.view, GWL_STYLE) as u32;
@@ -867,7 +867,8 @@ fn place_children() {
         let p = RECT { top: a.pill.top + bar, ..a.pill };
         let ph = ph - bar;
         let cy = p.top + (ph - b) / 2;
-        MoveWindow(a.view, s(14), s(10), ww - s(28), a.pill.top - s(18), 1);
+        MoveWindow(a.view, s(14), s(10), ww - s(14), a.pill.top - s(18), 1);
+        SendMessageW(a.view, 0xD3, 2, ((s(RIGHT_PAD) as isize) << 16) as isize); // EM_SETMARGINS: right margin, so text keeps its distance from the edge
         set_card_width();
         if a.small_font.is_null() {
             a.small_font = CreateFontW(-s(12), 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, w("Segoe UI").as_ptr());
@@ -914,7 +915,73 @@ fn stream_in(view: HWND, start: i32, doc: &str) {
 }
 
 fn scroll_bottom(view: HWND) {
-    unsafe { SendMessageW(view, WM_VSCROLL, SB_BOTTOM as usize, 0); }
+    unsafe { set_pos(view, i32::MAX); }
+}
+
+/// Space kept clear on the chat's right, in pixels at 96 dpi: the slim scroll bar lives at the window's edge.
+const RIGHT_PAD: i32 = 31;
+
+thread_local! {
+    /// While the scroll bar thumb is dragged: (mouse y at the start, scroll position at the start).
+    static SB_DRAG: Cell<Option<(i32, i32)>> = const { Cell::new(None) };
+}
+
+/// The chat's own slim scroll bar (the system one can't take the theme's colors): the thumb and the strip it
+/// moves in. None when everything fits.
+unsafe fn scrollbar(h: HWND) -> Option<(RECT, RECT)> {
+    let max = max_scroll(h);
+    if max <= 0 { return None; }
+    let (pos, _, page) = scroll_range(h);
+    let dpi = GetDpiForWindow(h).max(96) as i32;
+    let s = |v: i32| v * dpi / 96;
+    let mut rc: RECT = std::mem::zeroed();
+    GetClientRect(h, &mut rc);
+    let track = RECT { left: rc.right - s(12), top: s(6), right: rc.right - s(4), bottom: rc.bottom - s(6) };
+    let th = (page * (track.bottom - track.top) / (max + page)).max(s(32)).min(track.bottom - track.top);
+    let y = track.top + (pos.clamp(0, max) as i64 * (track.bottom - track.top - th) as i64 / max as i64) as i32;
+    Some((track, RECT { left: track.left, top: y, right: track.right, bottom: y + th }))
+}
+
+/// Draws the thumb in the theme's muted text color, soft until you drag it.
+unsafe fn scrollbar_paint(h: HWND, dc: HDC) {
+    let Some((_, thumb)) = scrollbar(h) else { return };
+    let alpha = if SB_DRAG.get().is_some() { 200 } else { 120 };
+    let rad = thumb.right - thumb.left;
+    images::smooth_round(dc, &thumb, Some((app().theme.muted, alpha)), None, rad);
+}
+
+/// Clicks and drags on the scroll bar. True when the mouse message was used.
+unsafe fn scrollbar_mouse(h: HWND, msg: u32, lp: LPARAM) -> bool {
+    let (x, y) = (lp as i16 as i32, (lp >> 16) as i16 as i32);
+    let dpi = GetDpiForWindow(h).max(96) as i32;
+    match msg {
+        WM_LBUTTONDOWN => {
+            let Some((track, thumb)) = scrollbar(h) else { return false };
+            if x < track.left - 6 * dpi / 96 { return false; }
+            let (pos, _, page) = scroll_range(h);
+            if y >= thumb.top && y < thumb.bottom {
+                SB_DRAG.set(Some((y, pos)));
+                SetCapture(h);
+                InvalidateRect(h, std::ptr::null(), 0);
+            } else {
+                scroll_to(h, pos + if y < thumb.top { -(page - 20) } else { page - 20 });
+            }
+            true
+        }
+        WM_MOUSEMOVE if SB_DRAG.get().is_some() => {
+            let (Some((start_y, start_pos)), Some((track, thumb))) = (SB_DRAG.get(), scrollbar(h)) else { return true };
+            let room = (track.bottom - track.top - (thumb.bottom - thumb.top)).max(1);
+            scroll_to(h, start_pos + ((y - start_y) as i64 * max_scroll(h) as i64 / room as i64) as i32);
+            true
+        }
+        WM_LBUTTONUP if SB_DRAG.get().is_some() => {
+            SB_DRAG.set(None);
+            ReleaseCapture();
+            InvalidateRect(h, std::ptr::null(), 0);
+            true
+        }
+        _ => false,
+    }
 }
 
 /// The furthest the chat may scroll: the end of the last reply sits at the bottom edge, never above it, so the
@@ -1714,6 +1781,7 @@ unsafe extern "system" fn child_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         bubbles::begin(mem);
         bubbles::paint(h, a.theme.bg);
         images::paint(h, pic_colors(a));
+        scrollbar_paint(h, mem);
         stat_paint(h);
         status_paint(h);
         bubbles::end();
@@ -1748,6 +1816,7 @@ unsafe extern "system" fn child_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
     }
     // Scrolling is done here, instantly and in whole pixels, instead of by RichEdit's animated scroll
     // (which copies pixels frame by frame and leaves bubble corners, pictures and status behind).
+    if !is_input && scrollbar_mouse(h, msg, lp) { return 0; }
     if !is_input {
         match msg {
             WM_MOUSEWHEEL => {
@@ -1799,6 +1868,7 @@ unsafe extern "system" fn child_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 DRAG_Y.set(None);
                 if msg == WM_MBUTTONUP { ReleaseCapture(); }
             }
+            WM_SETCURSOR if SB_DRAG.get().is_some() => { SetCursor(LoadCursorW(std::ptr::null_mut(), IDC_ARROW)); return 1; }
             WM_SETCURSOR if DRAG_Y.get().is_some() => { SetCursor(LoadCursorW(std::ptr::null_mut(), IDC_SIZENS)); return 1; }
             WM_MOUSEHWHEEL | WM_HSCROLL => return 0,
             _ => {}
@@ -2468,7 +2538,7 @@ pub fn run(show_now: bool) {
         set_text(a.btn, "Settings");
         a.send_btn = child("BUTTON", BS_OWNERDRAW as u32, hwnd, ID_SEND, a.font);
         set_text(a.send_btn, "Send");
-        a.view = child("RICHEDIT50W", WS_VSCROLL | ES_MULTI | ES_READ | ES_NOHIDE | ES_AUTOV, hwnd, 0, a.font);
+        a.view = child("RICHEDIT50W", ES_MULTI | ES_READ | ES_NOHIDE | ES_AUTOV, hwnd, 0, a.font);
         a.input = child("RICHEDIT50W", WS_VSCROLL | ES_MULTI | ES_AUTOV, hwnd, 0, a.font);
         SendMessageW(a.input, EM_SETTEXTMODE_, 1, 0); // plain text
         SendMessageW(a.view, EM_EXLIMITTEXT_, 0, 64 * 1024 * 1024);

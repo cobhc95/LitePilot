@@ -591,7 +591,7 @@ pub fn paint(view: HWND, c: Colors) {
             // Download the whole row now, so pictures off to the right are ready when paged to.
             for &id in &ids { start_fetch(main, id); }
             // As many tiles as fit; arrows page through the rest. Always a single row.
-            let fit = ((rc.right - x0 - s(8) + gap) / (tw + gap)).max(1) as usize;
+            let fit = ((rc.right - x0 - s(39) + gap) / (tw + gap)).max(1) as usize;
             let shown = fit.min(ids.len());
             let offset = GALLERIES.with_borrow_mut(|g| { let o = g[gid].offset.min(ids.len() - shown); g[gid].offset = o; o });
             let mut tiles = Vec::new();
