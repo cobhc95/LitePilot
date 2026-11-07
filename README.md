@@ -9,7 +9,7 @@ _Version 0.1 alpha._
   <img src="screenshots/settings.png" alt="LitePilot settings" width="380">
 </p>
 
-- **Setup:** run `LitePilot-0.1-alpha-Setup.exe` (per-user, no admin rights).
+- **Setup:** run `LitePilot-0.1-alpha-Setup.msi` (per-user, no admin rights). If you installed an older EXE setup, uninstall it first and choose to keep your settings. Before uninstalling the MSI, turn off Start with Windows in LitePilot settings. MSI uninstall leaves settings and chats in place.
 - **Portable:** unzip and run `LitePilot.exe`. Settings and chats stay beside it; API keys stay in Windows Credential Manager on that PC.
 - **API key:** Settings > pick a preset > Add profile > enter model and key > Save.
 - **Claude or ChatGPT login:** Settings > pick the profile > Sign in. The official CLI downloads on first sign-in, after you confirm.
@@ -33,9 +33,13 @@ _Version 0.1 alpha._
 
 Replies show text, tables, code, links, and embedded PNG, JPEG, and GIF images. Web images appear as links.
 
-The optional Copilot-key shortcut registers Win+Shift+F23. If Windows or another app owns it, LitePilot cannot use it. On Windows 11, check Settings > Personalization > Text input > Customize Copilot key on keyboard and try Search or Custom; choices vary, and this does not guarantee that Windows releases the shortcut.
+The optional Copilot-key shortcut registers Win+Shift+F23. If Windows or another app owns it, normal registration fails. On Windows 11, check Settings > Personalization > Text input > Customize Copilot key on keyboard and try Search or Custom; choices vary, and this does not guarantee that Windows releases the shortcut.
+
+Settings also offers an **opt-in global hook fallback**, off by default. If both Copilot options are enabled and normal registration fails, LitePilot installs a system-wide low-level keyboard hook to intercept that shortcut; it passes other keys through. Security software may flag global hooks, and Windows or keyboard implementations may still prevent this from working.
 
 ## Build
+
+The release build requires Rust, MSVC build tools, and [WiX Toolset 5](https://wixtoolset.org/) on PATH (for example, `dotnet tool install --global wix --version 5.0.2`).
 
 ```
 build-release.cmd

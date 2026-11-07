@@ -413,6 +413,45 @@ fn parse_hotkey(s: &str) -> Option<(u32, u32)> {
     Some((mods, key?))
 }
 
+// Opt-in fallback only: observe the Copilot shortcut, pass all other keys on.
+unsafe extern "system" fn copilot_proc(code: i32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    static DOWN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if code >= 0 {
+        let k = &*(lp as *const KBDLLHOOKSTRUCT);
+        if k.vkCode == VK_F23 as u32 && k.dwExtraInfo != 0x4C50 {
+            let up = wp as u32 == WM_KEYUP || wp as u32 == WM_SYSKEYUP;
+            let held = |v: VIRTUAL_KEY| GetAsyncKeyState(v as i32) < 0;
+            if up && DOWN.swap(false, Ordering::SeqCst) { return 1; }
+            if !up && held(VK_SHIFT) && (held(VK_LWIN) || held(VK_RWIN)) {
+                if !DOWN.swap(true, Ordering::SeqCst) {
+                    PostMessageW(app().hwnd, WM_TOGGLE, 0, 0);
+                    // Prevent the Windows key release from opening Start.
+                    let key = |up: bool| INPUT { r#type: INPUT_KEYBOARD, Anonymous: INPUT_0 { ki: KEYBDINPUT { wVk: 0xE8, wScan: 0, dwFlags: if up { KEYEVENTF_KEYUP } else { 0 }, time: 0, dwExtraInfo: 0x4C50 } } };
+                    let seq = [key(false), key(true)];
+                    SendInput(2, seq.as_ptr(), std::mem::size_of::<INPUT>() as i32);
+                }
+                return 1;
+            }
+        }
+    }
+    CallNextHookEx(std::ptr::null_mut(), code, wp, lp)
+}
+
+fn copilot_hook(on: bool) -> bool {
+    static HOOK: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
+    unsafe {
+        let cur = HOOK.load(Ordering::SeqCst);
+        if !on {
+            if cur != 0 { UnhookWindowsHookEx(cur as _); HOOK.store(0, Ordering::SeqCst); }
+            return false;
+        }
+        if cur != 0 { return true; }
+        let h = SetWindowsHookExW(WH_KEYBOARD_LL, Some(copilot_proc), GetModuleHandleW(std::ptr::null()), 0);
+        HOOK.store(h as isize, Ordering::SeqCst);
+        !h.is_null()
+    }
+}
+
 pub fn apply_hotkeys() {
     let a = app();
     let mut warn = vec![];
@@ -420,13 +459,14 @@ pub fn apply_hotkeys() {
         UnregisterHotKey(a.hwnd, 1);
         UnregisterHotKey(a.hwnd, 2);
         UnregisterHotKey(a.hwnd, 3);
+        copilot_hook(false);
         match parse_hotkey(&a.cfg.hotkey) {
             Some((m, k)) if RegisterHotKey(a.hwnd, 1, m, k) != 0 => {}
             Some(_) => warn.push(format!("{} is already in use by another app.", a.cfg.hotkey)),
             None => warn.push(format!("\"{}\" isn't a valid shortcut. Try Alt+Space or Ctrl+Shift+K.", a.cfg.hotkey)),
         }
         // The Copilot key normally arrives as Win+Shift+F23.
-        if a.cfg.copilot_key && RegisterHotKey(a.hwnd, 2, MOD_WIN | MOD_SHIFT | MOD_NOREPEAT, VK_F23 as u32) == 0 {
+        if a.cfg.copilot_key && RegisterHotKey(a.hwnd, 2, MOD_WIN | MOD_SHIFT | MOD_NOREPEAT, VK_F23 as u32) == 0 && !(a.cfg.copilot_hook_fallback && copilot_hook(true)) {
             warn.push("Windows or another app owns the Copilot key. In Windows Settings > Personalization > Text input > Customize Copilot key on keyboard, try Search or Custom; availability varies and Windows may still reserve the key.".into());
         }
     }
@@ -1712,7 +1752,7 @@ unsafe extern "system" fn child_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
     // Ctrl+letter chars from handled shortcuts must not reach the edit control.
     if (msg == WM_CHAR || msg == WM_SYSCHAR) && ATE_KEY.replace(false) { return 0; }
     if msg == WM_SYSCHAR || (msg == WM_CHAR && wp < 32 && !(is_input && (matches!(wp, 1 | 3 | 22 | 24 | 26) || ((wp == 8 || wp == 13) && GetKeyState(VK_CONTROL as i32) >= 0)))) { return 0; }
-    if is_input && text_len(h) == 0 && ((msg == WM_CHAR && wp == 8) || (msg == WM_KEYDOWN && wp as u16 == VK_DELETE)) { return 0; }
+    if is_input && ((msg == WM_CHAR && wp == 8) || (msg == WM_KEYDOWN && wp as u16 == VK_DELETE)) && text_len(h) == 0 { return 0; }
     let old = if is_input { a.old_input } else { a.old_view };
     // Anything that can change the text: redraw when it goes between empty and not, for the prompt.
     let edits = is_input && matches!(msg, WM_CHAR | WM_KEYDOWN | WM_KEYUP | WM_PASTE | WM_CUT | WM_UNDO | WM_SETTEXT | WM_IME_COMPOSITION);
@@ -2279,7 +2319,7 @@ pub fn run(show_now: bool) {
         CreateMutexW(std::ptr::null(), 0, w("LitePilot.SingleInstance").as_ptr());
         if GetLastError() == ERROR_ALREADY_EXISTS {
             let h = FindWindowW(w(CLASS).as_ptr(), std::ptr::null());
-            if !h.is_null() { PostMessageW(h, WM_TOGGLE, 0, 0); }
+            if show_now && !h.is_null() { PostMessageW(h, WM_HOTKEY, 3, 0); }
             return;
         }
         LoadLibraryW(w("msftedit.dll").as_ptr());
@@ -2377,8 +2417,8 @@ pub fn run(show_now: bool) {
         // First run greets with the sign-in choices; a taken shortcut needs attention too.
         let first_run = !a.data.join("config.json").exists();
         if first_run { save_config(); }
-        if first_run || !a.hotkey_warning.is_empty() { settings::open(); }
         if show_now { show(); }
+        if first_run || !a.hotkey_warning.is_empty() { settings::open(); }
         // Startup work is finished; give back pages until the first use.
         SetProcessWorkingSetSize(GetCurrentProcess(), usize::MAX, usize::MAX);
 

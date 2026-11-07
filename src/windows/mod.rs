@@ -42,5 +42,5 @@ pub fn run() {
     if install::is_setup_exe() {
         return install::install();
     }
-    app::run(a.iter().any(|x| x == "--show"));
+    app::run(!a.iter().any(|x| x == "--background"));
 }

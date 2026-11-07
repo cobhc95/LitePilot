@@ -86,6 +86,7 @@ pub struct Config {
     pub active: String,
     pub hotkey: String,
     pub copilot_key: bool,
+    pub copilot_hook_fallback: bool,
     pub start_with_windows: bool,
     pub hide_on_blur: bool,
     pub wrap_tables: bool, // false: wide tables keep their width and the chat scrolls sideways
@@ -131,6 +132,7 @@ impl Default for Config {
             active: "claude".into(),
             hotkey: "Alt+Space".into(),
             copilot_key: false,
+            copilot_hook_fallback: false,
             start_with_windows: false,
             hide_on_blur: false,
             dictation: true,
@@ -191,6 +193,7 @@ impl Config {
             active: st("active", &d.active),
             hotkey: st("hotkey", &d.hotkey),
             copilot_key: v["copilot_key"].as_bool().unwrap_or(false),
+            copilot_hook_fallback: v["copilot_hook_fallback"].as_bool().unwrap_or(false),
             start_with_windows: v["start_with_windows"].as_bool().unwrap_or(false),
             hide_on_blur: v["hide_on_blur"].as_bool().unwrap_or(false),
             dictation: v["dictation"].as_bool().unwrap_or(true),
@@ -231,7 +234,7 @@ impl Config {
             "id": p.id, "name": p.name, "kind": p.kind, "base_url": p.base_url, "model": p.model, "effort": p.effort, "memory": p.memory
         })).collect();
         let v = json!({
-            "active": self.active, "hotkey": self.hotkey, "copilot_key": self.copilot_key,
+            "active": self.active, "hotkey": self.hotkey, "copilot_key": self.copilot_key, "copilot_hook_fallback": self.copilot_hook_fallback,
             "start_with_windows": self.start_with_windows, "hide_on_blur": self.hide_on_blur, "dictation": self.dictation, "trim_idle": self.trim_idle, "close_idle": self.close_idle, "close_idle_minutes": self.close_idle_minutes, "trim_idle_seconds": self.trim_idle_seconds, "tips_left": self.tips_left, "memory_limit": self.memory_limit, "tidy_on": self.tidy_on, "tidy_auto": self.tidy_auto, "tidy_profile": self.tidy_profile, "tidy_model": self.tidy_model, "prewarm": self.prewarm, "hide_from_taskbar": self.hide_from_taskbar, "web_search": self.web_search, "share_memory": self.share_memory, "wrap_tables": self.wrap_tables, "on_top": self.on_top, "theme": self.theme, "font": self.font, "text_size": self.text_size,
             "palette": self.palette, "custom_bg": self.custom[0], "custom_text": self.custom[1], "custom_accent": self.custom[2],
             "window_x": self.window_pos.map(|p| p.0), "window_y": self.window_pos.map(|p| p.1),
@@ -290,6 +293,18 @@ mod tests {
         assert_eq!(c.palette_colors().unwrap().bg, 0x18261F);
         c.palette = String::new();
         assert!(c.palette_colors().is_none());
+    }
+    #[test]
+    fn copilot_hook_is_opt_in_and_persists() {
+        let mut c = Config::from_value(&json!({"copilot_key": true}));
+        assert!(!c.copilot_hook_fallback);
+        c.copilot_hook_fallback = true;
+        let dir = std::env::temp_dir().join(format!("lp-copilot-cfg-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("config.json");
+        c.save(&p).unwrap();
+        assert!(Config::load(&p).copilot_hook_fallback);
+        std::fs::remove_dir_all(dir).unwrap();
     }
     #[test]
     fn round_trip_and_defaults() {

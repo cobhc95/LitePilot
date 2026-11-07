@@ -73,7 +73,7 @@ pub fn hidden(cmd: &str) -> std::process::Command {
 }
 
 pub fn set_autostart(on: bool) {
-    if on { super::install::reg_set(RUN_KEY, "LitePilot", &format!("\"{}\"", exe_path().display())); }
+    if on { super::install::reg_set(RUN_KEY, "LitePilot", &format!("\"{}\" --background", exe_path().display())); }
     else { super::install::reg_delete_value(RUN_KEY, "LitePilot"); }
 }
 

@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="LitePilot" Manufacturer="LitePilot" Version="0.1.0"
+           ProductCode="C18D8FD5-F3A8-48FA-BF7B-21B8DBA52E01"
+           UpgradeCode="F34558FC-9FA7-4D59-BD92-4BD4D01245CC" Scope="perUser">
+    <MajorUpgrade DowngradeErrorMessage="A newer version of LitePilot is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <!-- Do not take ownership of files installed by the previous EXE installer. -->
+    <Property Id="LEGACYINSTALL">
+      <RegistrySearch Id="LegacyInstallSearch" Root="HKCU"
+                      Key="Software\Microsoft\Windows\CurrentVersion\Uninstall\LitePilot"
+                      Name="UninstallString" Type="raw" />
+    </Property>
+    <Launch Condition="Installed OR NOT LEGACYINSTALL"
+            Message="Please uninstall the previous LitePilot EXE installation first. Keep your settings when prompted, then run this MSI." />
+
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="ProgramsFolder" Name="Programs">
+        <Directory Id="INSTALLFOLDER" Name="LitePilot">
+          <Component Id="Application" Guid="8DCE5273-D252-4D8B-BC3E-ED28EB5F6F1E">
+            <File Id="LitePilotExe" Source="target\release\LitePilot.exe" KeyPath="yes" />
+          </Component>
+        </Directory>
+      </Directory>
+    </StandardDirectory>
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Component Id="StartShortcut" Guid="C4B7F55A-F3E4-4C64-9E2E-6A02BC0D0780">
+        <Shortcut Id="LitePilotShortcut" Name="LitePilot" Target="[#LitePilotExe]" WorkingDirectory="INSTALLFOLDER" />
+        <RegistryValue Root="HKCU" Key="Software\LitePilot\Installer" Name="Shortcut" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </StandardDirectory>
+    <Feature Id="Main" Title="LitePilot">
+      <ComponentRef Id="Application" />
+      <ComponentRef Id="StartShortcut" />
+    </Feature>
+  </Package>
+</Wix>
