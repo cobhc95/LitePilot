@@ -36,6 +36,9 @@ const ID_RENDER: usize = 1;
 const ID_COPIED: usize = 2;
 const ID_BLINK: usize = 3;
 const ID_UPDATE: usize = 4;
+
+/// Runs the update tick soon from the message loop, never from inside another window's handler.
+pub fn update_tick_soon() { unsafe { PostMessageW(app().hwnd, WM_TIMER, ID_UPDATE, 0); } }
 thread_local! { static CARET_HIDDEN: Cell<bool> = const { Cell::new(false) }; }
 const WM_MOUSELEAVE_: u32 = 0x2A3;
 const CMD_OPEN: usize = 100;

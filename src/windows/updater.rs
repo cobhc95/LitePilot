@@ -9,7 +9,6 @@ use crate::core::config::Config;
 use windows_sys::Win32::UI::Controls::*;
 use crate::core::update::{self, Download};
 use crate::core::VERSION;
-use sha2::{Digest, Sha256};
 use std::cell::Cell;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -19,8 +18,6 @@ const FIRST_CHECK: Duration = Duration::from_secs(30);
 /// The background thread wakes hourly; it checks GitHub only when the last check is a day old.
 const WAKE_EVERY: Duration = Duration::from_secs(60 * 60);
 const DAY: u64 = 24 * 60 * 60;
-const MAX_ZIP: usize = 64 * 1024 * 1024;
-const MIN_EXE: usize = 100_000;
 
 thread_local! {
     /// True while the question is on screen, so a timer that fires during it does not ask again.
@@ -80,7 +77,7 @@ fn check() -> Option<()> {
 
 /// Settings button: looks now, and lets the next minute tick ask straight away instead of waiting a day.
 /// Runs on the UI thread (a short request) so the answer can be shown at once.
-pub fn check_now(cfg: &mut Config) -> String {
+pub fn check_now() -> String {
     set_stamp("checked", now());
     let Some(body) = http::fetch(update::RELEASES_API, 1024 * 1024).and_then(|b| String::from_utf8(b).ok()) else {
         return "Can't reach the server.".into();
@@ -90,43 +87,31 @@ pub fn check_now(cfg: &mut Config) -> String {
             let _ = std::fs::create_dir_all(staging());
             let _ = std::fs::write(offer_file(), format!("{}\n{}\n{}", d.tag, d.url, d.sha256));
             set_stamp("asked", 0);
-            if on_tick(true, cfg) { super::app::save_config(); }
-            "A newer version was found.".into()
+            super::app::update_tick_soon();
+            "Newer version found. Asking now.".into()
         }
         None => { let _ = std::fs::remove_file(offer_file()); "Up to date.".to_string() }
     }
+}
+
+fn open_page() {
+    use windows_sys::Win32::UI::Shell::ShellExecuteW;
+    let url = w("https://github.com/cobhc95/LitePilot/releases/latest");
+    unsafe { ShellExecuteW(std::ptr::null_mut(), w("open").as_ptr(), url.as_ptr(), std::ptr::null(), std::ptr::null(), 1); }
+}
+
+/// The newer version found by the last check ("0.1.4"), while it is still newer than this copy.
+pub fn pending() -> Option<String> {
+    let tag = offer()?.tag;
+    let t = tag.trim_start_matches('v').to_string();
+    let n = |v: &str| v.split('.').map(|x| x.parse::<u32>().unwrap_or(0)).collect::<Vec<_>>();
+    if n(&t) > n(VERSION) { Some(t) } else { None }
 }
 
 fn offer() -> Option<Download> {
     let s = std::fs::read_to_string(offer_file()).ok()?;
     let mut lines = s.lines();
     Some(Download { tag: lines.next()?.into(), url: lines.next()?.into(), sha256: lines.next()?.into() })
-}
-
-/// Downloads, checks the SHA-256 from GitHub, and stages LitePilot.exe. Runs on a background thread.
-fn stage(d: &Download) -> Option<()> {
-    if !d.url.starts_with(update::DOWNLOAD_PREFIX) { return None; }
-    let zip = http::fetch(&d.url, MAX_ZIP)?;
-    if format!("{:x}", Sha256::digest(&zip)) != d.sha256 { return None; }
-
-    let dir = staging();
-    let _ = std::fs::remove_dir_all(dir.join("unpacked")); // only the unpack folder: the day stamps live beside it
-    let unpack = dir.join("unpacked");
-    std::fs::create_dir_all(&unpack).ok()?;
-    let zip_path = dir.join("update.zip");
-    std::fs::write(&zip_path, &zip).ok()?;
-    // tar.exe ships with Windows 10 and 11 and reads ZIP files; no extra code or scripts are run.
-    let tar = PathBuf::from(std::env::var_os("SystemRoot").unwrap_or_default()).join("System32").join("tar.exe");
-    let unpacked = hidden(&tar.to_string_lossy()).arg("-xf").arg(&zip_path).arg("-C").arg(&unpack).status().ok()?.success();
-    if !unpacked { return None; }
-    let bytes = std::fs::read(unpack.join("LitePilot.exe")).ok()?;
-    if bytes.len() < MIN_EXE || !bytes.starts_with(b"MZ") { return None; }
-    std::fs::write(dir.join("LitePilot.exe"), &bytes).ok()?;
-    std::fs::write(ready_marker(), &d.tag).ok()?;
-    let _ = std::fs::remove_file(offer_file());
-    let _ = std::fs::remove_dir_all(&unpack);
-    let _ = std::fs::remove_file(&zip_path);
-    Some(())
 }
 
 enum Choice { Now, Later, Never }
@@ -137,9 +122,9 @@ fn ask(tag: &str) -> Choice {
     let title = w("LitePilot");
     let main = w(&format!("LitePilot {} is available", tag.trim_start_matches('v'))); 
     let content = w(&format!(
-        "You have LitePilot {VERSION}.\n\nUpdate now: download it and restart once no reply is being written.\nLater: ask again tomorrow.\nNever show again: stop checking (turn it back on in Settings)."
+        "You have LitePilot {VERSION}.\n\nOpen download page: choose the update yourself on GitHub.\nLater: ask again tomorrow.\nNever show again: stop checking (turn it back on in Settings)."
     ));
-    let labels = [w("Update now"), w("Later"), w("Never show again")];
+    let labels = [w("Open download page"), w("Later"), w("Never show again")];
     let buttons: Vec<TASKDIALOG_BUTTON> = labels.iter().enumerate()
         .map(|(i, t)| TASKDIALOG_BUTTON { nButtonID: 101 + i as i32, pszButtonText: t.as_ptr() })
         .collect();
@@ -174,7 +159,7 @@ pub fn on_tick(was_visible: bool, cfg: &mut Config) -> bool {
     ASKING.set(false);
     match choice {
         Choice::Now => {
-            std::thread::spawn(move || { let _ = stage(&d); });
+            open_page();
             false
         }
         Choice::Later => false,
@@ -217,4 +202,10 @@ pub fn wait_for_old(pid: u32) {
         if std::fs::remove_file(&old).is_ok() || !old.exists() { break; }
         std::thread::sleep(Duration::from_millis(250));
     }
+}
+
+/// Settings row: opens the download page when an update is already known, otherwise looks for one.
+pub fn check_now_or_open() -> String {
+    if pending().is_some() { open_page(); return "Opened the download page.".into(); }
+    check_now()
 }

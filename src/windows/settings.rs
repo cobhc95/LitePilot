@@ -419,6 +419,10 @@ fn rows_for(page: Page, st: &St, query: &str) -> Vec<Row> {
     let q = query.trim().to_lowercase();
     match page {
         Page::Home => vec![
+            match super::updater::pending() {
+                Some(v) => row(g("\u{E895}"), &format!("Update {v} available"), &format!("You have LitePilot {}. Open the download page", crate::core::VERSION), Kind::Run(Run::UpdateCheck)),
+                None => row(g("\u{E895}"), "Check for updates", &format!("You have LitePilot {}. Look for a newer version now", crate::core::VERSION), Kind::Run(Run::UpdateCheck)),
+            },
             row(Icon::Chatgpt, "ChatGPT", if c.active == "codex" { "In use. Sign in with your plan" } else { "Sign in with your plan" }, Kind::Nav(Page::Login("codex"))),
             row(Icon::Claude, "Claude", if c.active == "claude" { "In use. Sign in with your plan" } else { "Sign in with your plan" }, Kind::Nav(Page::Login("claude"))),
             row(g("\u{E8D7}"), "API key", "OpenCode, DeepSeek, and others", Kind::Nav(Page::Api)),
@@ -429,7 +433,6 @@ fn rows_for(page: Page, st: &St, query: &str) -> Vec<Row> {
             row(g("\u{E8F2}"), "Chat memory", "What LitePilot remembers about you", Kind::Nav(Page::ChatMem)),
             row(g("\u{E8B7}"), "Your data", "Where it is, sizes, delete", Kind::Nav(Page::Data)),
             row(g("\u{E8F1}"), "Back up and move", "Export or import your memories and settings", Kind::Nav(Page::Backup)),
-            row(g("\u{E895}"), "Check for updates", &format!("You have LitePilot {}. Look for a newer version now", crate::core::VERSION), Kind::Run(Run::UpdateCheck)),
         ],
         Page::Login(k) => {
             let name = if k == "claude" { "Claude" } else { "ChatGPT" };
@@ -822,7 +825,7 @@ fn run(h: HWND, st: &mut St, r: Run) {
             }
         }
         Run::UpdateCheck => {
-            st.status = super::updater::check_now(&mut app().cfg);
+            st.status = super::updater::check_now_or_open();
         }
         Run::SignOut => {
             if let Page::Login(k) = st.page {
@@ -1550,7 +1553,10 @@ unsafe fn paint(h: HWND, dc: HDC, st: &mut St) {
         super::images::smooth_round(dc, &RECT { left: m - s(10), top: s(6), right: t.right + s(10), bottom: bar - s(6) }, Some((mix(a.theme.bg, a.theme.text, 14), 255)), None, s(10));
     }
     text(dc, f.bold, &crumb, RECT { left: m, top: 0, right: rc.right - m - s(150), bottom: bar }, a.theme.text, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-    text(dc, f.small, &format!("LitePilot {}", crate::core::VERSION), RECT { left: rc.right - m - s(150), top: 0, right: rc.right - m, bottom: bar }, a.theme.muted, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
+    match super::updater::pending() {
+        Some(v) => text(dc, f.small, &format!("Update {v} available"), RECT { left: rc.right - m - s(170), top: 0, right: rc.right - m, bottom: bar }, a.theme.accent, DT_RIGHT | DT_VCENTER | DT_SINGLELINE),
+        None => text(dc, f.small, &format!("LitePilot {}", crate::core::VERSION), RECT { left: rc.right - m - s(150), top: 0, right: rc.right - m, bottom: bar }, a.theme.muted, DT_RIGHT | DT_VCENTER | DT_SINGLELINE),
+    }
     if help_h > 0 {
         // The help line sits on its own band so row text can never run into it.
         let band = RECT { left: 0, top: rc.bottom - foot - help_h, right: rc.right, bottom: rc.bottom - foot };
