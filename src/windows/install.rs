@@ -26,9 +26,15 @@ pub fn install() {
     if message(null, "Install LitePilot for this Windows user?", MB_OKCANCEL | MB_ICONQUESTION) != IDOK { return; }
     let dir = install_dir();
     let exe = dir.join("LitePilot.exe");
-    let res = std::fs::create_dir_all(&dir).and_then(|_| std::fs::copy(exe_path(), &exe));
+    let src = exe_path();
+    // Windows' file-copy call refuses some locations with "The parameter is incorrect" (some drives, cloud or
+    // protected folders). Reading and writing the file ourselves works wherever the file can be read.
+    let res = std::fs::create_dir_all(&dir).and_then(|_| match std::fs::copy(&src, &exe) {
+        Ok(_) => Ok(()),
+        Err(first) => std::fs::read(&src).and_then(|b| std::fs::write(&exe, b)).map_err(|second| std::io::Error::new(second.kind(), format!("{first}; then {second}"))),
+    });
     if let Err(e) = res {
-        message(null, &format!("Could not install: {e}\nClose LitePilot if it is running, then try again."), MB_ICONERROR);
+        message(null, &format!("Could not install: {e}\nFrom: {}\nTo: {}\nClose LitePilot if it is running, then try again.", src.display(), exe.display()), MB_ICONERROR);
         return;
     }
     let _ = hidden("powershell.exe")
