@@ -49,6 +49,7 @@ impl Tile {
 struct Menu {
     hwnd: HWND,
     query: String,
+    sel: bool,
     vis: Vec<Tile>,
     cursor: usize,
     rects: Vec<RECT>,
@@ -131,7 +132,7 @@ fn open(hover: bool) {
             wc.lpszClassName = class.as_ptr();
             RegisterClassW(&wc);
         });
-        let mut m = Menu { hwnd: std::ptr::null_mut(), query: String::new(), vis: vec![], cursor: 0, rects: vec![], search: std::mem::zeroed(), hover };
+        let mut m = Menu { hwnd: std::ptr::null_mut(), query: String::new(), sel: false, vis: vec![], cursor: 0, rects: vec![], search: std::mem::zeroed(), hover };
         m.refresh();
         let (w_, h_) = m.layout();
         let mut br: RECT = std::mem::zeroed();
@@ -211,7 +212,10 @@ pub fn key(msg: u32, wp: WPARAM) -> bool {
     if msg == WM_CHAR || msg == WM_SYSCHAR {
         if hover { return false; }
         let Some(c) = char::from_u32(wp as u32).filter(|c| !c.is_control()) else { return true };
-        MENU.with_borrow_mut(|m| if let Some(m) = m { if m.query.chars().count() < 24 { m.query.push(c); m.refresh(); } });
+        MENU.with_borrow_mut(|m| if let Some(m) = m {
+            if m.sel { m.query.clear(); m.sel = false; }
+            if m.query.chars().count() < 24 { m.query.push(c); m.refresh(); }
+        });
         redraw();
         return true;
     }
@@ -227,6 +231,26 @@ pub fn key(msg: u32, wp: WPARAM) -> bool {
         let pressed = keys::Combo { ctrl: st(VK_CONTROL), shift: st(VK_SHIFT), alt: st(VK_MENU), key: name };
         if keys::resolve(&app().cfg.keys).iter().any(|(id, c)| *id == "tile_menu" && *c == pressed) { close(); return true; }
     }
+    if st(VK_CONTROL) && matches!(vk, 0x41 | 0x43 | 0x58 | 0x56 | VK_BACK) {
+        MENU.with_borrow_mut(|m| if let Some(m) = m {
+            match vk {
+                0x41 => m.sel = !m.query.is_empty(),
+                0x43 | 0x58 => {
+                    if !m.query.is_empty() { app::copy_to_clipboard(&m.query); }
+                    if vk == 0x58 { m.query.clear(); m.sel = false; m.refresh(); }
+                }
+                0x56 => {
+                    if m.sel { m.query.clear(); m.sel = false; }
+                    m.query.push_str(&super::settings::clipboard_text());
+                    m.query = m.query.chars().take(24).collect();
+                    m.refresh();
+                }
+                _ => { m.sel = false; let t = m.query.trim_end().len(); let cut = m.query[..t].rfind(' ').map_or(0, |i| i + 1); m.query.truncate(cut); m.refresh(); }
+            }
+        });
+        redraw();
+        return true;
+    }
     match vk {
         VK_ESCAPE => {
             let typed = MENU.with_borrow_mut(|m| m.as_mut().is_some_and(|m| if m.query.is_empty() { false } else { m.query.clear(); m.refresh(); true }));
@@ -238,7 +262,7 @@ pub fn key(msg: u32, wp: WPARAM) -> bool {
         VK_UP => step_row(-1),
         VK_DOWN => step_row(1),
         VK_TAB => step(if st(VK_SHIFT) { -1 } else { 1 }),
-        VK_BACK => { MENU.with_borrow_mut(|m| if let Some(m) = m { m.query.pop(); m.refresh(); }); redraw(); }
+        VK_BACK => { MENU.with_borrow_mut(|m| if let Some(m) = m { if m.sel { m.query.clear(); m.sel = false; } else { m.query.pop(); } m.refresh(); }); redraw(); }
         _ => {}
     }
     true
@@ -311,7 +335,12 @@ unsafe fn paint(h: HWND, dc: HDC, m: &Menu) {
     SelectObject(dc, icons);
     let old = SelectObject(dc, a.font() as _);
     let tr = RECT { left: sr.left + s(36), top: sr.top, right: sr.right - s(8), bottom: sr.bottom };
-    if m.query.is_empty() { text(dc, "Search", tr, a.theme.muted, DT_LEFT); } else { text(dc, &format!("{}\u{258F}", m.query), tr, a.theme.text, DT_LEFT | DT_END_ELLIPSIS); }
+    if m.query.is_empty() { text(dc, "Search", tr, a.theme.muted, DT_LEFT); } else if m.sel {
+        SetBkMode(dc, 2);
+        SetBkColor(dc, mix(a.theme.code, a.theme.accent, 55));
+        text(dc, &m.query, tr, a.theme.text, DT_LEFT | DT_END_ELLIPSIS);
+        SetBkMode(dc, 1);
+    } else { text(dc, &format!("{}\u{258F}", m.query), tr, a.theme.text, DT_LEFT | DT_END_ELLIPSIS); }
 
     for (i, (t, r)) in m.vis.iter().zip(m.rects.iter()).enumerate() {
         let (g, label, ..) = t.info();

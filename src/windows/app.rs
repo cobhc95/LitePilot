@@ -390,7 +390,8 @@ fn theme(cfg: &Config) -> rtf::Theme {
 /// Title bar text: while the window is open but not focused it says how to get back to it.
 unsafe fn set_title(focused: bool) {
     // The title names the shortcut you actually set; pressing it while the window is behind others brings it forward.
-    let t = if focused { "LitePilot".to_string() } else { format!("LitePilot  ({} to focus)", app().cfg.hotkey) };
+    let v = crate::core::VERSION;
+    let t = if focused { format!("LitePilot {v}") } else { format!("LitePilot {v}  ({} to focus)", app().cfg.hotkey) };
     SetWindowTextW(app().hwnd, w(&t).as_ptr());
 }
 
@@ -2366,7 +2367,7 @@ pub fn run(show_now: bool) {
             bg_brush, font: std::ptr::null_mut(), hotkey_warning: String::new(),
         })), Ordering::Relaxed);
         let a = app();
-        let hwnd = CreateWindowExW(0, cn.as_ptr(), w("LitePilot").as_ptr(), WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
+        let hwnd = CreateWindowExW(0, cn.as_ptr(), w(&format!("LitePilot {}", crate::core::VERSION)).as_ptr(), WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
             0, 0, 720, 520, std::ptr::null_mut(), std::ptr::null_mut(), inst, std::ptr::null());
         a.hwnd = hwnd;
         let corner: i32 = 2;

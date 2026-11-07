@@ -21,6 +21,7 @@ enum Item { Model(usize), Effort, Account }
 struct Menu {
     hwnd: HWND,
     query: String,
+    sel: bool,
     /// (label, slug, hint), best first.
     models: Vec<(String, String, &'static str)>,
     items: Vec<Item>,
@@ -238,7 +239,7 @@ pub fn toggle() {
             wc.lpszClassName = class.as_ptr();
             RegisterClassW(&wc);
         });
-        let mut m = Menu { hwnd: std::ptr::null_mut(), query: String::new(), models: load_models(), items: vec![], cursor: 0, top: 0, rects: vec![], search: std::mem::zeroed() };
+        let mut m = Menu { hwnd: std::ptr::null_mut(), query: String::new(), sel: false, models: load_models(), items: vec![], cursor: 0, top: 0, rects: vec![], search: std::mem::zeroed() };
         m.refresh(true);
         let (w_, h_) = m.layout();
         let mut hr: RECT = std::mem::zeroed();
@@ -368,7 +369,10 @@ pub fn key(msg: u32, wp: WPARAM) {
             if let Some(i) = hit { pick_model(i); }
             return;
         }
-        MENU.with_borrow_mut(|m| if let Some(m) = m { if m.query.chars().count() < 28 { m.query.push(c); m.refresh(false); } });
+        MENU.with_borrow_mut(|m| if let Some(m) = m {
+            if m.sel { m.query.clear(); m.sel = false; }
+            if m.query.chars().count() < 28 { m.query.push(c); m.refresh(false); }
+        });
         redraw();
         return;
     }
@@ -378,6 +382,26 @@ pub fn key(msg: u32, wp: WPARAM) {
     if let Some(name) = app::key_name(vk) {
         let pressed = keys::Combo { ctrl: st(VK_CONTROL), shift: st(VK_SHIFT), alt: st(VK_MENU), key: name };
         if keys::resolve(&app().cfg.keys).iter().any(|(id, c)| *id == "model_menu" && *c == pressed) { return close(); }
+    }
+    if st(VK_CONTROL) && matches!(vk, 0x41 | 0x43 | 0x58 | 0x56 | VK_BACK) {
+        MENU.with_borrow_mut(|m| if let Some(m) = m {
+            match vk {
+                0x41 => m.sel = !m.query.is_empty(),
+                0x43 | 0x58 => {
+                    if !m.query.is_empty() { app::copy_to_clipboard(&m.query); }
+                    if vk == 0x58 { m.query.clear(); m.sel = false; m.refresh(false); }
+                }
+                0x56 => {
+                    if m.sel { m.query.clear(); m.sel = false; }
+                    m.query.push_str(&super::settings::clipboard_text());
+                    m.query = m.query.chars().take(28).collect();
+                    m.refresh(false);
+                }
+                _ => { m.sel = false; let t = m.query.trim_end().len(); let cut = m.query[..t].rfind(' ').map_or(0, |i| i + 1); m.query.truncate(cut); m.refresh(false); }
+            }
+        });
+        redraw();
+        return;
     }
     match vk {
         VK_ESCAPE => close(),
@@ -395,7 +419,7 @@ pub fn key(msg: u32, wp: WPARAM) {
         VK_RIGHT => step_effort(1),
         VK_TAB => switch_account(st(VK_SHIFT)),
         VK_BACK => {
-            MENU.with_borrow_mut(|m| if let Some(m) = m { m.query.pop(); m.refresh(false); });
+            MENU.with_borrow_mut(|m| if let Some(m) = m { if m.sel { m.query.clear(); m.sel = false; } else { m.query.pop(); } m.refresh(false); });
             redraw();
         }
         _ => {}
@@ -474,6 +498,11 @@ unsafe fn paint(h: HWND, dc: HDC, m: &Menu) {
     let tr = RECT { left: sr.left + s(36), top: sr.top, right: sr.right - s(8), bottom: sr.bottom };
     if m.query.is_empty() {
         text(dc, "Type a model, or a number", tr, a.theme.muted, DT_LEFT);
+    } else if m.sel {
+        SetBkMode(dc, 2);
+        SetBkColor(dc, mix(a.theme.code, a.theme.accent, 55));
+        text(dc, &m.query, tr, a.theme.text, DT_LEFT | DT_END_ELLIPSIS);
+        SetBkMode(dc, 1);
     } else {
         // The caret sits right after the typed text.
         let shown = format!("{}\u{258F}", m.query);

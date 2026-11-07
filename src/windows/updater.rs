@@ -78,6 +78,25 @@ fn check() -> Option<()> {
     }
 }
 
+/// Settings button: looks now, and lets the next minute tick ask straight away instead of waiting a day.
+/// Runs on the UI thread (a short request) so the answer can be shown at once.
+pub fn check_now(cfg: &mut Config) -> String {
+    set_stamp("checked", now());
+    let Some(body) = http::fetch(update::RELEASES_API, 1024 * 1024).and_then(|b| String::from_utf8(b).ok()) else {
+        return "Can't reach the server.".into();
+    };
+    match update::portable_update(&body, VERSION) {
+        Some(d) => {
+            let _ = std::fs::create_dir_all(staging());
+            let _ = std::fs::write(offer_file(), format!("{}\n{}\n{}", d.tag, d.url, d.sha256));
+            set_stamp("asked", 0);
+            if on_tick(true, cfg) { super::app::save_config(); }
+            "A newer version was found.".into()
+        }
+        None => { let _ = std::fs::remove_file(offer_file()); "Up to date.".to_string() }
+    }
+}
+
 fn offer() -> Option<Download> {
     let s = std::fs::read_to_string(offer_file()).ok()?;
     let mut lines = s.lines();

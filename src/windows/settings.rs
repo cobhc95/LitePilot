@@ -47,7 +47,7 @@ enum Pick { Theme, Palette, Font, Size, Spacing, Provider, TrimAfter, CloseAfter
 #[derive(Clone, Copy, PartialEq)]
 enum Field { Hotkey, ApiName, ApiUrl, ApiModel, ApiKey, Custom(usize), MemAdd, Passphrase }
 #[derive(Clone, Copy, PartialEq)]
-enum Run { SignIn, SignOut, ApiSave, ApiRemove, KeysReset, MemClear, MemTidy, EngineClear, MemPaste, MemPrompt, DataOpen, DataCopy, DataWipe(u8), Export, Import, QuickExport, TidyNow, TidyApply, TidyDiscard, TidyUndo }
+enum Run { UpdateCheck, SignIn, SignOut, ApiSave, ApiRemove, KeysReset, MemClear, MemTidy, EngineClear, MemPaste, MemPrompt, DataOpen, DataCopy, DataWipe(u8), Export, Import, QuickExport, TidyNow, TidyApply, TidyDiscard, TidyUndo }
 
 #[derive(Clone, Copy, PartialEq)]
 enum Kind { Nav(Page), Jump(Page, usize), Toggle(Tog), Pick(Pick), Field(Field), Run(Run), Key(usize), MemItem(usize), Info, Hint, Preview }
@@ -153,6 +153,7 @@ struct St {
     cursor: usize,
     scroll: i32,
     query: String,
+    sel_all: bool,
     edit: Option<(Field, String)>,
     capture: Option<Cap>,
     status: String,
@@ -428,7 +429,7 @@ fn rows_for(page: Page, st: &St, query: &str) -> Vec<Row> {
             row(g("\u{E8F2}"), "Chat memory", "What LitePilot remembers about you", Kind::Nav(Page::ChatMem)),
             row(g("\u{E8B7}"), "Your data", "Where it is, sizes, delete", Kind::Nav(Page::Data)),
             row(g("\u{E8F1}"), "Back up and move", "Export or import your memories and settings", Kind::Nav(Page::Backup)),
-            row(g("\u{E946}"), &format!("LitePilot {}", crate::core::VERSION), "An early test version. Feedback is welcome", Kind::Info),
+            row(g("\u{E895}"), "Check for updates", &format!("You have LitePilot {}. Look for a newer version now", crate::core::VERSION), Kind::Run(Run::UpdateCheck)),
         ],
         Page::Login(k) => {
             let name = if k == "claude" { "Claude" } else { "ChatGPT" };
@@ -627,6 +628,7 @@ fn goto(st: &mut St, page: Page, sel_idx: usize) {
     PICK.set(None);
     st.page = page;
     st.query.clear();
+    st.sel_all = false;
     st.edit = None;
     st.capture = None;
     st.scroll = 0;
@@ -819,6 +821,9 @@ fn run(h: HWND, st: &mut St, r: Run) {
                 else { sign_in(h, k, st); }
             }
         }
+        Run::UpdateCheck => {
+            st.status = super::updater::check_now(&mut app().cfg);
+        }
         Run::SignOut => {
             if let Page::Login(k) = st.page {
                 cli::sign_out(k);
@@ -1002,7 +1007,7 @@ fn move_cursor(st: &mut St, dir: i32) {
     }
 }
 
-fn clipboard_text() -> String {
+pub fn clipboard_text() -> String {
     unsafe {
         if OpenClipboard(std::ptr::null_mut()) == 0 { return String::new(); }
         let h = GetClipboardData(13);
@@ -1099,9 +1104,39 @@ fn key_down(h: HWND, vk: u16) {
         }
         if alt && vk == VK_LEFT { return go_back(h, st); }
         if ctrl && vk == 0x53 && st.page == Page::Api { return api_save(st); }
+        // Windows text shortcuts in the search box: select all, copy, cut, paste, delete a word.
+        if ctrl && matches!(st.page, Page::Home | Page::Keys | Page::ManageMem) {
+            match vk {
+                0x41 => { st.sel_all = !st.query.is_empty(); return; }
+                0x43 | 0x58 => {
+                    if !st.query.is_empty() { app::copy_to_clipboard(&st.query.clone()); }
+                    if vk == 0x58 { st.query.clear(); st.sel_all = false; rebuild(st); }
+                    return;
+                }
+                0x56 => {
+                    let p = clipboard_text();
+                    if st.sel_all { st.query.clear(); }
+                    st.sel_all = false;
+                    st.query.push_str(&p);
+                    st.query = st.query.chars().take(40).collect();
+                    rebuild(st);
+                    st.scroll = 0;
+                    return;
+                }
+                VK_BACK => {
+                    st.sel_all = false;
+                    let t = st.query.trim_end().len();
+                    let cut = st.query[..t].rfind(' ').map_or(0, |i| i + 1);
+                    st.query.truncate(cut);
+                    rebuild(st);
+                    return;
+                }
+                _ => {}
+            }
+        }
         let kind = st.rows.get(st.cursor).map(|r| r.kind);
         match vk {
-            VK_ESCAPE => { if !st.query.is_empty() { st.query.clear(); rebuild(st); } else { go_back(h, st); } }
+            VK_ESCAPE => { st.sel_all = false; if !st.query.is_empty() { st.query.clear(); rebuild(st); } else { go_back(h, st); } }
             VK_UP => move_cursor(st, -1),
             VK_DOWN => move_cursor(st, 1),
             VK_PRIOR => { for _ in 0..5 { move_cursor(st, -1); } }
@@ -1124,10 +1159,11 @@ fn key_down(h: HWND, vk: u16) {
                     app::update_header();
                     st.status = "Cleared. Saved.".into();
                     rebuild(st);
-                } else if !st.query.is_empty() { st.query.clear(); rebuild(st); }
+                } else if !st.query.is_empty() { st.sel_all = false; st.query.clear(); rebuild(st); }
             }
             VK_BACK => {
-                if !st.query.is_empty() { st.query.pop(); rebuild(st); }
+                if st.sel_all { st.sel_all = false; st.query.clear(); rebuild(st); }
+                else if !st.query.is_empty() { st.query.pop(); rebuild(st); }
                 else if st.page != Page::Home { go_back(h, st); }
             }
             VK_RIGHT => match kind {
@@ -1160,7 +1196,8 @@ fn char_in(h: HWND, c: char) {
         if st.capture.is_some() || PICK.get().is_some() { return; }
         if let Some((_, t)) = st.edit.as_mut() { if t.chars().count() < 200 { t.push(c); } return; }
         // Typing searches: every setting on the home page, the shortcut list on its own page.
-        if matches!(st.page, Page::Home | Page::Keys | Page::ManageMem) && st.query.chars().count() < 40 {
+        if matches!(st.page, Page::Home | Page::Keys | Page::ManageMem) && (st.sel_all || st.query.chars().count() < 40) {
+            if st.sel_all { st.query.clear(); st.sel_all = false; }
             st.query.push(c);
             st.rows = build_rows(st);
             st.cursor = first_selectable(&st.rows);
@@ -1489,6 +1526,10 @@ unsafe fn paint(h: HWND, dc: HDC, st: &mut St) {
         let tr = RECT { left: sr.left + s(46), top: sr.top, right: sr.right - s(10), bottom: sr.bottom };
         if st.query.is_empty() {
             text(dc, f.body, match st.page { Page::Home => "Search settings, e.g. memory", Page::ManageMem => "Search memories", _ => "Search actions and shortcuts" }, tr, a.theme.muted, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        } else if st.sel_all {
+            let tw = text_w(dc, f.body, &st.query).min(tr.right - tr.left);
+            round(dc, &RECT { left: tr.left - s(2), top: tr.top + s(5), right: tr.left + tw + s(2), bottom: tr.bottom - s(5) }, mix(a.theme.code, a.theme.accent, 55), None, s(4));
+            text(dc, f.body, &st.query, tr, a.theme.text, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
         } else {
             text(dc, f.body, &format!("{}\u{258F}", st.query), tr, a.theme.text, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
         }
@@ -1509,6 +1550,7 @@ unsafe fn paint(h: HWND, dc: HDC, st: &mut St) {
         super::images::smooth_round(dc, &RECT { left: m - s(10), top: s(6), right: t.right + s(10), bottom: bar - s(6) }, Some((mix(a.theme.bg, a.theme.text, 14), 255)), None, s(10));
     }
     text(dc, f.bold, &crumb, RECT { left: m, top: 0, right: rc.right - m - s(150), bottom: bar }, a.theme.text, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    text(dc, f.small, &format!("LitePilot {}", crate::core::VERSION), RECT { left: rc.right - m - s(150), top: 0, right: rc.right - m, bottom: bar }, a.theme.muted, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
     if help_h > 0 {
         // The help line sits on its own band so row text can never run into it.
         let band = RECT { left: 0, top: rc.bottom - foot - help_h, right: rc.right, bottom: rc.bottom - foot };
@@ -1801,11 +1843,11 @@ pub fn open() {
             Some(p) => (p.0.min(wa.right - ww).max(wa.left), p.1.min(wa.bottom - wh).max(wa.top)),
             None => (wa.left + (wa.right - wa.left - ww) / 2, wa.top + ((wa.bottom - wa.top - wh) / 2).max(0)),
         };
-        let mut st = St { page: Page::Home, rows: vec![], cursor: 0, scroll: 0, query: String::new(), edit: None, capture: None, status: String::new(), rects: vec![], content_h: 0, view_h: 0, api_sel: 0, api: Default::default(), signed_in: false, login_note: String::new(), mem: Vec::new(), clear_armed: false, engine_armed: false, wipe_armed: None, pass: String::new(), plan: Vec::new(), tidying: false, fonts: Some(fonts) };
+        let mut st = St { page: Page::Home, rows: vec![], cursor: 0, scroll: 0, query: String::new(), sel_all: false, edit: None, capture: None, status: String::new(), rects: vec![], content_h: 0, view_h: 0, api_sel: 0, api: Default::default(), signed_in: false, login_note: String::new(), mem: Vec::new(), clear_armed: false, engine_armed: false, wipe_armed: None, pass: String::new(), plan: Vec::new(), tidying: false, fonts: Some(fonts) };
         st.api_sel = api_profiles().iter().position(|p| p.id == a.cfg.active).unwrap_or(0);
         st.rows = build_rows(&st);
         ST.set(Some(st));
-        let h = CreateWindowExW(WS_EX_TOPMOST | WS_EX_APPWINDOW, cn.as_ptr(), w("LitePilot Settings").as_ptr(), style, x, y, ww, wh, a.hwnd, std::ptr::null_mut(), inst, std::ptr::null());
+        let h = CreateWindowExW(WS_EX_TOPMOST | WS_EX_APPWINDOW, cn.as_ptr(), w(&format!("LitePilot Settings {}", crate::core::VERSION)).as_ptr(), style, x, y, ww, wh, a.hwnd, std::ptr::null_mut(), inst, std::ptr::null());
         a.settings = h;
         refit(h);
         if a.theme.bg < 0x808080 {
