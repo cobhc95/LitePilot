@@ -2,7 +2,14 @@
 
 A tiny Windows popup for AI chat. Press a shortcut, ask, press Esc.
 
-- **Setup:** run `LitePilot-Setup.exe` (per-user, no admin rights).
+_Version 0.1 alpha._
+
+<p>
+  <img src="screenshots/chat.png" alt="The LitePilot chat popup" width="380">
+  <img src="screenshots/settings.png" alt="LitePilot settings" width="380">
+</p>
+
+- **Setup:** run `LitePilot-0.1-alpha-Setup.exe` (per-user, no admin rights).
 - **Portable:** unzip and run `LitePilot.exe`. Settings and chats stay beside it; API keys stay in Windows Credential Manager on that PC.
 - **API key:** Settings > pick a preset > Add profile > enter model and key > Save.
 - **Claude or ChatGPT login:** Settings > pick the profile > Sign in. The official CLI downloads on first sign-in, after you confirm.

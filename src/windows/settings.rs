@@ -476,7 +476,8 @@ fn rows_for(page: Page, st: &St, query: &str) -> Vec<Row> {
             let tm = toggle_meta(Tog::Trim);
             let cm = toggle_meta(Tog::Close);
             let wm = toggle_meta(Tog::Warm);
-            let mut v = vec![row(g(wm.0), wm.1, "", Kind::Toggle(Tog::Warm)),
+            let mut v = vec![hint("LitePilot itself needs only a few MB. Total memory depends on the engine you chat with. Claude runs the official Claude Code app (roughly 200 MB while it is running). ChatGPT runs the official Codex app (roughly 85 MB). An API key talks to the provider directly and adds almost nothing. The options below only affect Claude and ChatGPT."),
+                row(g(wm.0), wm.1, "", Kind::Toggle(Tog::Warm)),
                 hint("Starts the chat engine in the background as soon as you open the window, so your first reply is quicker. It uses about 75 MB for a few seconds, then gets compressed."),
                 row(g(tm.0), tm.1, "", Kind::Toggle(Tog::Trim)),
                 hint("Recommended. Moves most of the engine's memory out of RAM shortly after a reply, and Windows may compress it. The next reply starts a touch slower.")];
