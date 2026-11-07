@@ -190,6 +190,27 @@ thread_local! {
     static BACK_HOVER: Cell<bool> = const { Cell::new(false) };
     /// The colour picker, while open: (which custom colour, [hue 0-360, saturation 0-1, brightness 0-1], active bar).
     static PICK: Cell<Option<(usize, [f32; 3], usize)>> = const { Cell::new(None) };
+    /// What the open picker's color was before it was opened, so Cancel (or leaving) can put it back.
+    static ORIG: RefCell<Option<(usize, String)>> = const { RefCell::new(None) };
+    /// When the live preview last recolored the app (it is limited to a few times a second while sliding).
+    static LAST_PREVIEW: Cell<Option<std::time::Instant>> = const { Cell::new(None) };
+}
+
+/// Shows the picker's color in the whole app as it is moved, without saving it. Apply saves; Cancel puts the old one back.
+fn preview(force: bool) {
+    let Some((i, p, _)) = PICK.get() else { return };
+    if !force && LAST_PREVIEW.get().is_some_and(|t| t.elapsed() < std::time::Duration::from_millis(60)) { return; }
+    LAST_PREVIEW.set(Some(std::time::Instant::now()));
+    let hex = hex_of(pick_rgb(&p));
+    if app().cfg.custom[i] != hex { app().cfg.custom[i] = hex; app::apply_appearance(); }
+}
+
+/// Closes the picker. With `revert` the color goes back to what it was before the preview.
+fn close_picker(revert: bool) {
+    if let Some((i, orig)) = ORIG.take() {
+        if revert && PICK.get().is_some() { app().cfg.custom[i] = orig; app::apply_appearance(); }
+    }
+    PICK.set(None);
 }
 
 // ---- Colour picker ----
@@ -228,6 +249,7 @@ fn pick_click(st: &St, i: usize, x: i32, y: i32) -> bool {
             let t = ((x - x0) as f32 / (x1 - x0).max(1) as f32).clamp(0.0, 1.0);
             if k == 0 { p[0] = t * 360.0 } else { p[k] = t }
             PICK.set(Some((ci, p, k)));
+            preview(false);
             break;
         }
     }
@@ -237,8 +259,25 @@ fn pick_click(st: &St, i: usize, x: i32, y: i32) -> bool {
 /// Opens the picker on custom colour `i`, starting from its current value.
 fn open_picker(st: &mut St, i: usize) {
     let cur = parse_hex(&app().cfg.custom[i]).unwrap_or(0x808080);
+    ORIG.set(Some((i, app().cfg.custom[i].clone())));
     PICK.set(Some((i, rgb_hsv([(cur >> 16) as u8, (cur >> 8) as u8, cur as u8]), 0)));
-    st.status = "\u{2190}\u{2192} adjust, \u{2191}\u{2193} next bar, Enter apply, Esc cancel, F2 type a hex code.".into();
+    st.status = "Drag the bars, then press Apply. Click the color code to type one.".into();
+}
+
+/// Applies the open picker's color (Enter, or the Apply button): saved, and the whole app recolors at once.
+fn apply_picker(h: HWND, st: &mut St) {
+    ORIG.set(None);
+    if let Some((i, p, _)) = PICK.take() {
+        app().cfg.custom[i] = hex_of(pick_rgb(&p));
+        change_appearance(h, st);
+    }
+}
+
+/// The Apply and Cancel buttons along the bottom of the open picker row.
+fn picker_buttons(rr: &RECT) -> (RECT, RECT) {
+    let (w, top, bottom) = (s(96), rr.bottom - s(40), rr.bottom - s(8));
+    let apply = RECT { left: rr.right - s(14) - w, top, right: rr.right - s(14), bottom };
+    (apply, RECT { left: apply.left - s(10) - w, top, right: apply.left - s(10), bottom })
 }
 
 /// Moves the active bar's value by `dir` steps (a step is bigger with Shift).
@@ -247,6 +286,7 @@ fn nudge_picker(dir: f32, big: bool) {
         let k = if big { 5.0 } else { 1.0 };
         if bar == 0 { p[0] = (p[0] + dir * 3.0 * k).rem_euclid(360.0); } else { p[bar] = (p[bar] + dir * 0.02 * k).clamp(0.0, 1.0); }
         PICK.set(Some((i, p, bar)));
+        preview(false);
     }
 }
 
@@ -628,7 +668,7 @@ fn rebuild(st: &mut St) {
 }
 
 fn goto(st: &mut St, page: Page, sel_idx: usize) {
-    PICK.set(None);
+    close_picker(true);
     st.page = page;
     st.query.clear();
     st.sel_all = false;
@@ -990,7 +1030,7 @@ fn activate(h: HWND, st: &mut St) {
 }
 
 fn go_back(h: HWND, st: &mut St) {
-    PICK.set(None);
+    close_picker(true);
     // Posted, not destroyed here: this runs while the settings state is borrowed, and destroying the window clears it.
     if st.page == Page::Home { unsafe { PostMessageW(h, WM_CLOSE, 0, 0); } return; }
     // Back lands on the item that was opened, one level up.
@@ -1079,18 +1119,14 @@ fn key_down(h: HWND, vk: u16) {
         if let Some((i, p, _)) = PICK.get() {
             let shift = unsafe { GetKeyState(VK_SHIFT as i32) } < 0;
             match vk {
-                VK_RETURN => {
-                    PICK.set(None);
-                    app().cfg.custom[i] = hex_of(pick_rgb(&p));
-                    change_appearance(h, st);
-                }
-                VK_ESCAPE => { PICK.set(None); st.status.clear(); }
+                VK_RETURN => apply_picker(h, st),
+                VK_ESCAPE => { close_picker(true); st.status.clear(); }
                 VK_UP | VK_DOWN => if let Some((i, p, bar)) = PICK.get() { PICK.set(Some((i, p, (bar + if vk == VK_DOWN { 1 } else { 2 }) % 3))); },
                 VK_LEFT => nudge_picker(-1.0, shift),
                 VK_RIGHT => nudge_picker(1.0, shift),
                 VK_PRIOR => nudge_picker(1.0, true),
                 VK_NEXT => nudge_picker(-1.0, true),
-                VK_F2 => { PICK.set(None); st.edit = Some((Field::Custom(i), hex_of(pick_rgb(&p)))); st.status = "Type, then press Enter. Esc cancels.".into(); }
+                VK_F2 => { close_picker(true); st.edit = Some((Field::Custom(i), hex_of(pick_rgb(&p)))); st.status = "Type, then press Enter. Esc cancels.".into(); }
                 _ => {}
             }
             return;
@@ -1298,7 +1334,7 @@ fn row_height(dc: HDC, f: &Fonts, r: &Row, width: i32) -> i32 {
                 (rc.bottom + s(34)).max(s(48))
             }
             Kind::Preview => s(68),
-            Kind::Field(Field::Custom(ci)) if PICK.get().is_some_and(|p| p.0 == ci) => s(40) + s(124),
+            Kind::Field(Field::Custom(ci)) if PICK.get().is_some_and(|p| p.0 == ci) => s(40) + s(124) + s(46),
             _ => if r.sub.is_empty() { s(40) } else { s(48) },
         }
     }
@@ -1354,6 +1390,11 @@ unsafe fn paint_picker(dc: HDC, f: &Fonts, row: &RECT, card: u32, hsv: [f32; 3],
         let label = if k == 0 { format!("{}\u{00B0}", hsv[0].round() as i32) } else { format!("{}%", (vals[k] * 100.0).round() as i32) };
         text(dc, f.small, &label, RECT { left: x1 + s(14), top: top - s(4), right: row.right - s(10), bottom: top + bh + s(4) }, a.theme.muted, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     }
+    let (apply, cancel) = picker_buttons(row);
+    round(dc, &cancel, a.theme.bg, None, s(10));
+    text(dc, f.body, "Cancel", cancel, a.theme.text, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    round(dc, &apply, a.theme.accent, None, s(10));
+    text(dc, f.body, "Apply", apply, a.theme.bg, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 }
 
 unsafe fn toggle_switch(dc: HDC, on: bool, right: i32, r: &RECT) {
@@ -1678,8 +1719,18 @@ unsafe extern "system" fn proc_(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LR
                 if y < s(46) && st.page != Page::Home { back = true; return; }
                 if let Some(i) = row_at(st, x, y) {
                     if let Some((ci, ..)) = PICK.get() {
-                        if matches!(st.rows[i].kind, Kind::Field(Field::Custom(c)) if c == ci) { pick_click(st, i, x, y); return; }
-                        PICK.set(None); // clicking elsewhere closes it without applying
+                        if matches!(st.rows[i].kind, Kind::Field(Field::Custom(c)) if c == ci) {
+                            let rr = st.rects[i];
+                            let (apply, cancel) = picker_buttons(&rr);
+                            let hit = |r: &RECT| x >= r.left && x < r.right && y >= r.top && y < r.bottom;
+                            if hit(&apply) { apply_picker(h, st); }
+                            else if hit(&cancel) { close_picker(true); st.status.clear(); }
+                            else if y < rr.top + s(40) { // the color code: type one instead
+                                if let Some((_, p, _)) = PICK.get() { close_picker(true); st.edit = Some((Field::Custom(ci), hex_of(pick_rgb(&p)))); st.status = "Type a code like #26303A, then press Enter.".into(); }
+                            } else { pick_click(st, i, x, y); }
+                            return;
+                        }
+                        close_picker(true); // clicking elsewhere closes it without applying
                     }
                     st.edit = None;
                     st.capture = None;
@@ -1700,6 +1751,7 @@ unsafe extern "system" fn proc_(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LR
             InvalidateRect(h, std::ptr::null(), 0);
             0
         }
+        WM_LBUTTONUP => { preview(true); InvalidateRect(h, std::ptr::null(), 0); 0 }
         WM_MOUSEMOVE => {
             let (x, y) = ((lp & 0xFFFF) as i16 as i32, ((lp >> 16) & 0xFFFF) as i16 as i32);
             let i = with(|st| row_at(st, x, y)).flatten().unwrap_or(usize::MAX);
@@ -1802,6 +1854,7 @@ unsafe extern "system" fn proc_(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LR
         }
         WM_CLOSE => { DestroyWindow(h); 0 }
         WM_DESTROY => {
+            close_picker(true);
             a.settings = std::ptr::null_mut();
             // Back to the chat: the popup gets focus again, on its typing box.
             app::return_focus();
