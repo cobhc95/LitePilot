@@ -120,11 +120,11 @@ enum Choice { Now, Later, Never }
 /// close never turns checks off. Later is the default button, so an accidental Enter never starts an install.
 fn ask(tag: &str) -> Choice {
     let title = w("LitePilot");
-    let main = w(&format!("LitePilot {} is available", tag.trim_start_matches('v'))); 
+    let main = w(&format!("Update to LitePilot {}?", tag.trim_start_matches('v'))); 
     let content = w(&format!(
-        "You have LitePilot {VERSION}.\n\nOpen download page: choose the update yourself on GitHub.\nLater: ask again tomorrow.\nNever show again: stop checking (turn it back on in Settings)."
+        "You have LitePilot {VERSION}.\n\nYes: opens the GitHub page, where you choose the download yourself.\nLater: ask again tomorrow.\nNever show again: stop checking (turn it back on in Settings)."
     ));
-    let labels = [w("Open download page"), w("Later"), w("Never show again")];
+    let labels = [w("Yes, open GitHub"), w("Later"), w("Never show again")];
     let buttons: Vec<TASKDIALOG_BUTTON> = labels.iter().enumerate()
         .map(|(i, t)| TASKDIALOG_BUTTON { nButtonID: 101 + i as i32, pszButtonText: t.as_ptr() })
         .collect();

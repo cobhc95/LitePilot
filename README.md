@@ -2,7 +2,7 @@
 
 A tiny Windows popup for AI chat. Press a shortcut, ask, press Esc.
 
-_Version 0.1.3._
+_Version 0.1.4._
 
 <p>
   <img src="screenshots/chat.png" alt="The LitePilot chat popup" width="380">
