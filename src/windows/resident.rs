@@ -1,0 +1,354 @@
+//! One CLI kept alive between messages, so a reply doesn't wait for a program to start. Claude Code runs in
+//! streaming-input mode and Codex as `app-server`; both keep the conversation themselves. The CLI (and
+//! anything it starts) lives in a job object: it dies with LitePilot, its memory is trimmed back to the
+//! minimum a few seconds after each reply, and it is shut down after a few idle minutes.
+use super::util::hidden;
+use crate::core::protocol::{flatten_prompt, parse_claude_line, Event};
+use crate::core::{attach, resident as rpc, Msg};
+use serde_json::{json, Value};
+use std::io::{BufRead, BufReader, Write};
+use std::path::{Path, PathBuf};
+use std::process::{Child, ChildStdin, ChildStdout, Stdio};
+use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+use windows_sys::Win32::System::JobObjects::*;
+use windows_sys::Win32::System::Threading::{OpenProcess, SetProcessWorkingSetSize};
+
+/// Set from Settings: squeeze the CLI memory after a reply, and close it after this many idle seconds (0 = never).
+static TRIM: AtomicBool = AtomicBool::new(true);
+static TRIM_AFTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(5);
+static CLOSE_AFTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+pub fn configure(trim: bool, trim_secs: u32, close: bool, minutes: u32) {
+    TRIM.store(trim, Ordering::SeqCst);
+    TRIM_AFTER.store(trim_secs.max(1) as u64, Ordering::SeqCst);
+    CLOSE_AFTER.store(if close { minutes.max(1) as u64 * 60 } else { 0 }, Ordering::SeqCst);
+}
+
+fn idle_kill() -> Option<Duration> { Some(CLOSE_AFTER.load(Ordering::SeqCst)).filter(|s| *s > 0).map(Duration::from_secs) }
+const STOPPED: &str = "The CLI stopped unexpectedly. Try Sign in from Settings.";
+
+struct Server {
+    child: Child,
+    stdin: ChildStdin,
+    out: BufReader<ChildStdout>,
+    job: HANDLE,
+    kind: String,
+    /// What the process was started with; a change means starting again.
+    cfg: String,
+    thread: Option<String>,
+    /// How many turns (and their fingerprint) the CLI has already seen.
+    known: (usize, u64),
+    last: Instant,
+    trimmed: bool,
+    next_id: u64,
+    /// Codex: conversations are saved so its own memory can learn from them.
+    engine: bool,
+}
+unsafe impl Send for Server {}
+
+static SERVER: Mutex<Option<Server>> = Mutex::new(None);
+/// The live job, so Stop can end it while a reply is being read.
+static JOB: AtomicIsize = AtomicIsize::new(0);
+
+impl Server {
+    fn kill(mut self) {
+        JOB.store(0, Ordering::SeqCst);
+        unsafe { TerminateJobObject(self.job, 1); CloseHandle(self.job); }
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+
+    fn line(&mut self) -> Option<String> {
+        let mut s = String::new();
+        (self.out.read_line(&mut s).ok()? > 0).then_some(s)
+    }
+
+    fn send(&mut self, s: &str) -> bool { self.stdin.write_all(s.as_bytes()).and_then(|_| self.stdin.flush()).is_ok() }
+
+    /// A JSON-RPC request, waiting for its answer.
+    fn call(&mut self, method: &str, params: Value) -> Result<Value, String> {
+        self.next_id += 1;
+        let id = self.next_id;
+        if !self.send(&rpc::request(id, method, params)) { return Err(STOPPED.into()); }
+        loop {
+            let Some(l) = self.line() else { return Err(STOPPED.into()) };
+            match rpc::parse(&l) {
+                rpc::Rpc::Response(r, v) if r == id => return v,
+                rpc::Rpc::Request(i) => { self.send(&rpc::decline(&i)); }
+                _ => {}
+            }
+        }
+    }
+}
+
+/// Stops whatever reply is in progress by ending the CLI. The next message starts it again.
+pub fn stop() {
+    let j = JOB.swap(0, Ordering::SeqCst);
+    if j != 0 { unsafe { TerminateJobObject(j as HANDLE, 1); } }
+}
+
+/// Pushes the working set of every process in the job out to the page file / compressed store.
+fn trim(job: HANDLE) {
+    unsafe {
+        let mut buf = [0usize; 66];
+        if QueryInformationJobObject(job, JobObjectBasicProcessIdList, buf.as_mut_ptr() as _, std::mem::size_of_val(&buf) as u32, std::ptr::null_mut()) == 0 { return; }
+        // Layout: u32 assigned, u32 listed, then the ids as pointer-sized values.
+        let listed = (buf[0] >> 32).min(64);
+        for pid in &buf[1..1 + listed] {
+            let h = OpenProcess(0x0100 | 0x1000, 0, *pid as u32); // PROCESS_SET_QUOTA | PROCESS_QUERY_LIMITED_INFORMATION
+            if !h.is_null() { SetProcessWorkingSetSize(h, usize::MAX, usize::MAX); CloseHandle(h); }
+        }
+    }
+}
+
+fn start_reaper() {
+    static RUNNING: AtomicBool = AtomicBool::new(false);
+    if RUNNING.swap(true, Ordering::SeqCst) { return; }
+    std::thread::spawn(|| loop {
+        std::thread::sleep(Duration::from_secs(2));
+        let Ok(mut g) = SERVER.try_lock() else { continue }; // a reply is in progress
+        match g.as_mut() {
+            None => { RUNNING.store(false, Ordering::SeqCst); return; }
+            Some(s) if idle_kill().is_some_and(|d| s.last.elapsed() >= d) => { if let Some(s) = g.take() { s.kill(); } }
+            Some(s) if TRIM.load(Ordering::SeqCst) && s.last.elapsed() >= Duration::from_secs(TRIM_AFTER.load(Ordering::SeqCst)) && !s.trimmed => { s.trimmed = true; trim(s.job); }
+            Some(_) => {}
+        }
+    });
+}
+
+/// Where the facts list lives and whether the assistant may look it up. Set before each message; the memory
+/// tool server is started with the CLI, so a change here also changes `cfg_key` and restarts the CLI.
+static MEMTOOL: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+pub fn set_memory_tool(dir: &Path, on: bool) {
+    *MEMTOOL.lock().unwrap_or_else(|e| e.into_inner()) = if on { Some(dir.to_string_lossy().replace('\\', "/")) } else { None };
+}
+fn memory_tool() -> Option<(String, String)> {
+    let dir = MEMTOOL.lock().unwrap_or_else(|e| e.into_inner()).clone()?;
+    let exe = std::env::current_exe().ok()?.to_string_lossy().replace('\\', "/");
+    Some((exe, dir))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn spawn(kind: &str, model: &str, effort: &str, search: bool, memory: &str, engine: bool, cwd: &Path, cfg: String) -> Option<Server> {
+    let exe = super::cli::find(kind)?;
+    let mut c = hidden(exe.to_str()?);
+    c.current_dir(cwd).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
+    if kind == "claude" {
+        // Web search and page reading only: no commands. With engine memory, file tools too, but its working folder
+        // is the memory folder and edits are only accepted inside it; anything outside needs a permission nobody can give.
+        // With web search on, it may still save personal facts, but the prompt forbids saving anything a web page says.
+        let mut tools = if search { vec!["WebSearch", "WebFetch"] } else { vec![] };
+        let dir = claude_memory_dir(cwd);
+        if engine && std::fs::create_dir_all(&dir).is_ok() {
+            tools.extend(&["Read", "Write", "Edit"]);
+            c.current_dir(&dir);
+            let settings = json!({"autoMemoryEnabled": true, "autoMemoryDirectory": dir.to_string_lossy().replace('\\', "/")});
+            c.args(["--permission-mode", "acceptEdits", "--settings", &settings.to_string()]);
+        }
+        c.args(["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--include-partial-messages", "--verbose", "--tools", &tools.join(",")]);
+        // Only the search tools are pre-approved; never the file tools, which acceptEdits limits to the memory folder.
+        let mut allowed: Vec<String> = if search { vec!["WebSearch".into(), "WebFetch".into()] } else { vec![] };
+        // Read-only look at this computer (fixed operations, see sysinfo.rs), plus the facts lookup when memory is on.
+        let mut servers = serde_json::Map::new();
+        if let Ok(exe) = std::env::current_exe() {
+            servers.insert(super::sysinfo::SERVER.into(), json!({"command": exe.to_string_lossy().replace('\\', "/"), "args": ["--system-mcp"]}));
+            allowed.push(format!("mcp__{}", super::sysinfo::SERVER));
+        }
+        if let Some((exe, dir)) = memory_tool() {
+            servers.insert(crate::core::mcp::SERVER.into(), json!({"command": exe, "args": ["--memory-mcp", dir]}));
+            allowed.push(format!("mcp__{}", crate::core::mcp::SERVER));
+        }
+        if !servers.is_empty() { c.args(["--mcp-config", &json!({"mcpServers": servers}).to_string()]); }
+        if !allowed.is_empty() { c.args(["--allowedTools", &allowed.join(","), "--permission-prompts", "none"]); }
+        let mut system = system_for(search, memory);
+        if engine { system += super::cli::ENGINE_MEMORY; system += super::cli::SOURCE_ORDER; }
+        c.args(["--no-session-persistence", "--strict-mcp-config", "--setting-sources", "", "--disable-slash-commands", "--system-prompt", &system]);
+        if !model.is_empty() { c.args(["--model", model]); }
+        if !effort.is_empty() { c.args(["--effort", effort]); }
+    } else {
+        c.arg("app-server");
+        // Chat only: nothing that starts helper processes or takes memory for tools this app never uses.
+        for f in ["apps", "browser_use", "browser_use_external", "computer_use", "in_app_browser", "multi_agent", "shell_tool", "image_generation", "skill_search", "tool_suggest", "remote_plugin", "shell_snapshot"] {
+            c.args(["--disable", f]);
+        }
+        if let Some((exe, dir)) = memory_tool() {
+            let n = crate::core::mcp::SERVER;
+            c.arg("-c").arg(format!("mcp_servers.{n}.command=\"{exe}\""));
+            c.arg("-c").arg(format!("mcp_servers.{n}.args=[\"--memory-mcp\",\"{dir}\"]"));
+            c.arg("-c").arg(format!("mcp_servers.{n}.default_tools_approval_mode=\"approve\""));
+        }
+        if let Ok(exe) = std::env::current_exe() {
+            let (n, exe) = (super::sysinfo::SERVER, exe.to_string_lossy().replace('\\', "/"));
+            c.arg("-c").arg(format!("mcp_servers.{n}.command=\"{exe}\""));
+            c.arg("-c").arg(format!("mcp_servers.{n}.args=[\"--system-mcp\"]"));
+            c.arg("-c").arg(format!("mcp_servers.{n}.default_tools_approval_mode=\"approve\""));
+        }
+        c.arg("-c").arg(format!("web_search=\"{}\"", if search { "live" } else { "disabled" }));
+        // Codex's own memory: learns in the background from saved chats that didn't use web search.
+        if engine {
+            // (The note about how this memory behaves goes in with the conversation's instructions.)
+            c.args(["-c", "features.memories=true", "-c", "memories.disable_on_external_context=true", "-c", "memories.min_rollout_idle_hours=1",
+                "-c", "memories.max_rollouts_per_startup=4", "-c", "memories.max_rollout_age_days=2"]);
+        } else {
+            c.args(["-c", "features.memories=false"]);
+        }
+    }
+    let mut child = c.spawn().ok()?;
+    let (stdin, stdout) = (child.stdin.take()?, child.stdout.take()?);
+    let job = unsafe {
+        use std::os::windows::io::AsRawHandle;
+        let j = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+        let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        SetInformationJobObject(j, JobObjectExtendedLimitInformation, &info as *const _ as _, std::mem::size_of_val(&info) as u32);
+        AssignProcessToJobObject(j, child.as_raw_handle() as HANDLE);
+        j
+    };
+    JOB.store(job as isize, Ordering::SeqCst);
+    Some(Server { child, stdin, out: BufReader::new(stdout), job, kind: kind.into(), cfg, thread: None, known: (0, rpc::hash(&[])), last: Instant::now(), trimmed: false, next_id: 0, engine })
+}
+
+/// Codex: initialize the protocol once per process.
+fn handshake(s: &mut Server) -> Result<(), String> {
+    s.call("initialize", json!({"clientInfo": {"name": "LitePilot", "version": "1"}}))?;
+    s.send(&rpc::notification("initialized"));
+    Ok(())
+}
+
+fn turn_claude(s: &mut Server, prompt: &str, media: &[PathBuf], sink: &dyn Fn(Event)) -> Option<String> {
+    if !s.send(&attach::claude_line(prompt, media)) { sink(Event::Error(STOPPED.into())); return None; }
+    let mut reply = String::new();
+    loop {
+        let Some(l) = s.line() else { sink(Event::Error(STOPPED.into())); return None };
+        match parse_claude_line(&l) {
+            Some(Event::Text(t)) => { reply.push_str(&t); sink(Event::Text(t)); }
+            Some(Event::Status(t)) => sink(Event::Status(t)),
+            Some(Event::Done) => { sink(Event::Done); return Some(reply); }
+            Some(Event::Error(m)) => { sink(Event::Error(m)); return None; }
+            None => {}
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+/// The conversation inside a running Codex: made once, then reused for every message that follows on from it.
+fn ensure_thread(s: &mut Server, cwd: &Path, system: &str) -> Result<(), String> {
+    if s.thread.is_some() { return Ok(()); }
+    let system = if s.engine { format!("{system}{}{}", super::cli::CODEX_MEMORY, super::cli::SOURCE_ORDER) } else { system.to_string() };
+    let r = s.call("thread/start", json!({"cwd": cwd, "ephemeral": !s.engine, "sandbox": "read-only", "approvalPolicy": "never", "developerInstructions": system}))?;
+    match r["thread"]["id"].as_str() {
+        Some(id) => { s.thread = Some(id.to_string()); Ok(()) }
+        None => Err("Codex didn't start a conversation.".into()),
+    }
+}
+
+/// What the process or conversation was set up with. The memory is in the standing instructions, so an edit
+/// to it means a fresh conversation (Codex) or process (Claude).
+fn cfg_key(kind: &str, model: &str, effort: &str, search: bool, memory: &str, engine: bool) -> String {
+    let m = crate::core::memory::hash(&format!("{memory}{:?}", MEMTOOL.lock().unwrap_or_else(|e| e.into_inner())));
+    if kind == "claude" { format!("{model}|{effort}|{search}|{m:x}|{engine}") } else { format!("{search}|{m:x}|{engine}") }
+}
+
+/// Claude's own memory, in LitePilot's data folder (beside the empty working folder), never in ~/.claude.
+pub fn claude_memory_dir(cwd: &Path) -> PathBuf {
+    cwd.parent().unwrap_or(cwd).join("engine-memory").join("claude")
+}
+
+/// Ends the resident CLI if it is idle, so it starts again with fresh memory. Does nothing during a reply.
+pub fn reset() {
+    if let Ok(mut g) = SERVER.try_lock() { if let Some(s) = g.take() { s.kill(); } }
+}
+
+fn system_for(search: bool, memory: &str) -> String {
+    let base = if search { format!("{} {}", super::cli::SYSTEM, super::cli::SEARCH) } else { super::cli::SYSTEM.to_string() };
+    base + memory
+}
+
+/// Gets the CLI ready in the background (called when the window opens), so the first message doesn't wait
+/// for it to start. Does nothing if one is already running or a reply is in progress.
+pub fn warm(kind: &str, model: &str, effort: &str, search: bool, memory: &str, engine: bool, cwd: &Path) {
+    if super::cli::find(kind).is_none() { return; }
+    let (kind, model, effort, memory, cwd) = (kind.to_string(), model.to_string(), effort.to_string(), memory.to_string(), cwd.to_path_buf());
+    std::thread::spawn(move || {
+        let Ok(mut g) = SERVER.try_lock() else { return };
+        let cfg = cfg_key(&kind, &model, &effort, search, &memory, engine);
+        if g.as_ref().is_some_and(|s| s.kind == kind && s.cfg == cfg) { return; }
+        if let Some(s) = g.take() { s.kill(); }
+        let Some(mut s) = spawn(&kind, &model, &effort, search, &memory, engine, &cwd, cfg) else { return };
+        if kind == "codex" && (handshake(&mut s).is_err() || ensure_thread(&mut s, &cwd, &system_for(search, &memory)).is_err()) { s.kill(); return; }
+        *g = Some(s);
+        start_reaper();
+    });
+}
+
+fn turn_codex(s: &mut Server, model: &str, effort: &str, prompt: &str, media: &[PathBuf], cwd: &Path, system: &str, sink: &dyn Fn(Event)) -> Option<String> {
+    let fail = |m: String| { sink(Event::Error(m)); None };
+    if let Err(e) = ensure_thread(s, cwd, system) { return fail(e); }
+    let mut input = vec![json!({"type": "text", "text": prompt})];
+    for m in media.iter().filter(|m| m.extension().is_some_and(|e| !e.eq_ignore_ascii_case("pdf"))) {
+        input.push(json!({"type": "localImage", "path": m}));
+    }
+    let mut params = json!({"threadId": s.thread, "input": input});
+    if !model.is_empty() { params["model"] = model.into(); }
+    if !effort.is_empty() { params["effort"] = effort.into(); }
+    s.next_id += 1;
+    let id = s.next_id;
+    if !s.send(&rpc::request(id, "turn/start", params)) { return fail(STOPPED.into()); }
+    let (mut reply, mut last_err) = (String::new(), None);
+    loop {
+        let Some(l) = s.line() else { return fail(STOPPED.into()) };
+        match rpc::parse(&l) {
+            rpc::Rpc::Text(t) => { reply.push_str(&t); sink(Event::Text(t)); }
+            rpc::Rpc::Status(t) => sink(Event::Status(t)),
+            rpc::Rpc::Failure(m) => last_err = Some(m),
+            rpc::Rpc::TurnEnd { ok: true, .. } => { sink(Event::Done); return Some(reply); }
+            rpc::Rpc::TurnEnd { err, .. } => return fail(err.or(last_err).unwrap_or_else(|| "Codex reported an error".into())),
+            rpc::Rpc::Response(r, Err(m)) if r == id => return fail(m),
+            rpc::Rpc::Request(i) => { s.send(&rpc::decline(&i)); }
+            _ => {}
+        }
+    }
+}
+
+/// Sends the last of `turns` to the resident CLI, starting or restarting it when needed. When the CLI already
+/// holds the earlier turns only the new message goes; otherwise the whole conversation is sent again.
+#[allow(clippy::too_many_arguments)]
+pub fn run(kind: &str, model: &str, effort: &str, search: bool, memory: &str, engine: bool, turns: &[Msg], extra: &str, media: &[PathBuf], cwd: &Path, sink: &dyn Fn(Event)) {
+    if super::cli::find(kind).is_none() { return sink(Event::Error("Not signed in yet. Open Settings and click Sign in.".into())); }
+    let Some(last) = turns.last() else { return };
+    let prev = &turns[..turns.len() - 1];
+    let cfg = cfg_key(kind, model, effort, search, memory, engine);
+    let mut g = SERVER.lock().unwrap_or_else(|e| e.into_inner());
+    let in_sync = |s: &Server| s.known == (prev.len(), rpc::hash(prev));
+    // Claude can't forget a conversation, so anything out of step starts a fresh process.
+    let stale = g.as_ref().is_some_and(|s| s.kind != kind || s.cfg != cfg || (kind == "claude" && !in_sync(s) && s.known.0 != 0));
+    if stale { if let Some(s) = g.take() { s.kill(); } }
+    if g.is_none() {
+        let Some(mut s) = spawn(kind, model, effort, search, memory, engine, cwd, cfg) else { return sink(Event::Error("Could not start the CLI.".into())) };
+        if kind == "codex" {
+            if let Err(e) = handshake(&mut s) { s.kill(); return sink(Event::Error(e)); }
+        }
+        *g = Some(s);
+        start_reaper();
+    }
+    let s = g.as_mut().unwrap();
+    s.trimmed = false;
+    let sync = in_sync(s) && (kind == "claude" || s.thread.is_some());
+    if !sync { s.thread = None; }
+    let prompt = format!("{}{extra}", if sync { last.text.clone() } else { flatten_prompt(turns) });
+    let system = system_for(search, memory);
+    let reply = if kind == "claude" { turn_claude(s, &prompt, media, sink) } else { turn_codex(s, model, effort, &prompt, media, cwd, &system, sink) };
+    match reply {
+        Some(text) => {
+            let mut all = turns.to_vec();
+            all.push(Msg::new("assistant", text));
+            s.known = (all.len(), rpc::hash(&all));
+            s.last = Instant::now();
+        }
+        // A failed turn leaves the CLI holding a message the chat has dropped, so start clean next time.
+        None => { if let Some(s) = g.take() { s.kill(); } }
+    }
+}
