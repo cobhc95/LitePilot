@@ -17,6 +17,7 @@ mod memory_store;
 mod rtf;
 mod secrets;
 mod sysinfo;
+mod thumbs;
 mod tidy;
 mod settings;
 mod hover;

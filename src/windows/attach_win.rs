@@ -1,5 +1,5 @@
 //! Pasting or dropping files and pictures into the typing box. Each one is copied into the data folder and
-//! marked in the box as `[📎 name]`; delete the mark to un-attach it. Nothing stays in memory.
+//! shown as a tile above the typing box (see thumbs.rs); its × un-attaches it. Nothing stays in memory.
 use super::app::{self, app};
 use super::util::*;
 use crate::core::attach;
@@ -9,12 +9,10 @@ use windows_sys::Win32::System::DataExchange::*;
 use windows_sys::Win32::System::Memory::*;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::SetFocus;
 use windows_sys::Win32::UI::Shell::DragQueryFileW;
-use windows_sys::Win32::UI::WindowsAndMessaging::SendMessageW;
 
 const CF_UNICODETEXT: u32 = 13;
 const CF_DIB: u32 = 8;
 const CF_HDROP: u32 = 15;
-const EM_REPLACESEL: u32 = 0xC2;
 
 fn dir() -> PathBuf { app().data.join("attachments") }
 
@@ -43,12 +41,8 @@ fn unique(name: &str, same_len: Option<u64>) -> (String, PathBuf, bool) {
 }
 
 fn insert_token(name: &str) {
-    let a = app();
-    let t = w(&format!("{} ", attach::token(name)));
-    unsafe {
-        SendMessageW(a.input_hwnd(), EM_REPLACESEL, 1, t.as_ptr() as isize);
-        SetFocus(a.input_hwnd());
-    }
+    super::thumbs::add(name);
+    unsafe { SetFocus(app().input_hwnd()); }
 }
 
 fn add_file(src: &Path) {

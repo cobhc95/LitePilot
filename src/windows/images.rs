@@ -226,6 +226,20 @@ fn register_file(name: &str, path: &std::path::Path) -> Option<usize> {
     })
 }
 
+/// A w×h tile (cropped to fill) of an attached picture file, kept with the picture so repaints are cheap.
+pub fn file_tile(name: &str, path: &std::path::Path, w: i32, h: i32, like: HDC, bg: u32) -> HBITMAP {
+    let (Some(id), Some(a)) = (register_file(name, path), api()) else { return std::ptr::null_mut() };
+    IMGS.with_borrow_mut(|v| {
+        let m = &mut v[id];
+        if m.thumb.is_null() || m.thumb_px != (w, h) {
+            if !m.thumb.is_null() { unsafe { DeleteObject(m.thumb as _); } }
+            m.thumb = unsafe { render(&a, &m.read(), m.px, w, h, true, like, bg) };
+            m.thumb_px = (w, h);
+        }
+        m.thumb
+    })
+}
+
 /// A row of thumbnails for the pictures attached to one message. `salt` (the message text) keeps two messages
 /// with the same picture from sharing a row.
 pub fn register_files(pics: &[(String, std::path::PathBuf)], salt: &str) -> Option<(u32, u32)> {

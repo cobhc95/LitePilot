@@ -93,7 +93,7 @@ pub struct Config {
     pub check_updates: bool, // once a day, LitePilot asks before installing a newer version
     pub share_memory: bool, // one facts list for every account (on), or a separate list per account (off)
     pub web_search: bool, // lets Claude and ChatGPT search the web (no file or command access)
-    pub dictation: bool, // mic button and shortcut for Windows voice typing; on by default
+    pub dictation: bool, // mic button and shortcut for Windows voice typing; off by default
     pub trim_idle: bool, // squeeze the chat engine memory a few seconds after each reply; on by default
     pub close_idle: bool, // shut the chat engine down after being idle; off by default
     pub close_idle_minutes: u32,
@@ -136,7 +136,7 @@ impl Default for Config {
             copilot_hook_fallback: true,
             start_with_windows: false,
             hide_on_blur: false,
-            dictation: true,
+            dictation: false,
             trim_idle: true,
             close_idle: false,
             close_idle_minutes: 5,
@@ -198,7 +198,7 @@ impl Config {
             copilot_hook_fallback: v["copilot_hook_fallback"].as_bool().unwrap_or(d.copilot_hook_fallback),
             start_with_windows: v["start_with_windows"].as_bool().unwrap_or(false),
             hide_on_blur: v["hide_on_blur"].as_bool().unwrap_or(false),
-            dictation: v["dictation"].as_bool().unwrap_or(true),
+            dictation: v["dictation"].as_bool().unwrap_or(false),
             trim_idle: v["trim_idle"].as_bool().unwrap_or(true),
             close_idle: v["close_idle"].as_bool().unwrap_or(false),
             close_idle_minutes: v["close_idle_minutes"].as_u64().unwrap_or(5).clamp(1, 240) as u32,

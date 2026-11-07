@@ -1,7 +1,7 @@
 ﻿#![allow(non_snake_case)]
 //! Tray process, hotkeys, popup window. Idle means blocked in GetMessage: no timers, no polling.
 use super::util::*;
-use super::{actions_view, attach_win, bubbles, chip_menu, cli, code, history_view, http, images, key_badges, memory_store, rtf, secrets, settings, tile_menu};
+use super::{actions_view, attach_win, bubbles, chip_menu, cli, code, history_view, http, images, key_badges, memory_store, rtf, secrets, settings, thumbs, tile_menu};
 use crate::core::{config::*, history, keys, memory, protocol::*, Msg};
 use std::cell::Cell;
 
@@ -143,6 +143,7 @@ impl App {
 }
 
 pub fn pill_top() -> i32 { app().pill.top }
+pub fn pill_rect() -> RECT { app().pill }
 
 /// The picture viewer covers the window, so the chat's controls step aside while it is open.
 pub fn viewer_mode(on: bool) {
@@ -739,7 +740,7 @@ fn fit_header() {
         ScreenToClient(a.hwnd, &mut tl);
         ScreenToClient(a.hwnd, &mut hl);
         let s = |v: i32| v * GetDpiForWindow(a.hwnd).max(96) as i32 / 96;
-        let p = a.pill;
+        let p = RECT { top: a.pill.top + thumbs::height(), ..a.pill };
         let h = p.bottom - p.top - s(14);
         MoveWindow(a.input, tl.x + s(8), p.top + s(7), (hl.x - s(6) - tl.x - s(8)).max(s(40)), h, 1);
     }
@@ -859,11 +860,14 @@ fn place_children() {
         // The pill grows upward with the typed text, up to six lines; the controls stay on its bottom row.
         // Layout B3: a 36px pill. The model name, the menu, and Send stay centred however tall it grows.
         let extra = (a.input_lines.clamp(1, 6) as i32 - 1) * s(20);
-        let (m, ph, b) = (s(10), s(36) + extra, s(28));
+        // Attached pictures show inside the pill, above the typing row; the controls stay on that row.
+        let bar = thumbs::height();
+        let (m, ph, b) = (s(10), s(36) + extra + bar, s(28));
         a.pill = RECT { left: m, top: wh - ph - m, right: ww - m, bottom: wh - m };
-        let p = a.pill;
+        let p = RECT { top: a.pill.top + bar, ..a.pill };
+        let ph = ph - bar;
         let cy = p.top + (ph - b) / 2;
-        MoveWindow(a.view, s(14), s(10), ww - s(28), p.top - s(18), 1);
+        MoveWindow(a.view, s(14), s(10), ww - s(28), a.pill.top - s(18), 1);
         set_card_width();
         if a.small_font.is_null() {
             a.small_font = CreateFontW(-s(12), 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, w("Segoe UI").as_ptr());
@@ -878,6 +882,7 @@ fn place_children() {
         history_view::relayout();
         actions_view::relayout();
         update_header(); // sizes the model chip, then places the input after it
+        thumbs::place();
         InvalidateRect(a.hwnd, std::ptr::null(), 1);
     }
 }
@@ -1167,11 +1172,13 @@ pub fn hide() {
 
 fn send() {
     let a = app();
-    let text = get_text(a.input).trim().replace("\r\n", "\n").replace('\r', "\n");
-    if text.is_empty() || a.streaming { return; }
+    let typed = get_text(a.input).trim().replace("\r\n", "\n").replace('\r', "\n");
+    if (typed.is_empty() && !thumbs::has()) || a.streaming { return; }
     set_text(a.input, "");
     // "remember that ..." and "forget ..." are handled here and never reach the model.
-    if let Some(cmd) = memory::parse_command(&text) { return memory_command(cmd); }
+    if let Some(cmd) = memory::parse_command(&typed) { return memory_command(cmd); }
+    // Attached files are marked in the message after what was typed.
+    let text = [typed, thumbs::take()].into_iter().filter(|x| !x.is_empty()).collect::<Vec<_>>().join(" ");
     let (last_user, att) = (text.clone(), a.data.join("attachments"));
     let user = Msg::new("user", text);
     let _ = history::append(&a.chat, &user);
@@ -1298,7 +1305,8 @@ fn retry_with_other_model(err: &str) -> bool {
     let gone = if p.model.is_empty() { "The default model".to_string() } else { p.model.clone() };
     a.msgs.push(Msg::new("note", format!("{gone} isn't available on this account, so LitePilot switched to {next}.")));
     let _ = history::append(&a.chat, a.msgs.last().unwrap());
-    set_text(a.input, &user.text);
+    let typed = thumbs::restore(&user.text);
+    set_text(a.input, &typed);
     send();
     true
 }

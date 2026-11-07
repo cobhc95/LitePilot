@@ -2,12 +2,23 @@
 
 A tiny Windows popup for AI chat. Press a shortcut, ask, press Esc.
 
-_Version 0.1.5._
+_Version 0.1.7._
 
 <p>
-  <img src="screenshots/chat.png" alt="The LitePilot chat popup" width="380">
-  <img src="screenshots/settings.png" alt="LitePilot settings" width="380">
+  <img src="screenshots/chat.png" alt="A reply with a table and code, in the LitePilot popup" width="380">
+  <img src="screenshots/attach.png" alt="A picture attached in the typing box" width="380">
 </p>
+
+## What it does
+
+- **Instant:** one shortcut opens it over whatever you are doing, Esc hides it. Everything is keyboard-first.
+- **Your accounts:** sign in with ChatGPT or Claude, or add any OpenAI-compatible or Anthropic API key. Switch account, model and effort with Ctrl+M.
+- **Remembers you:** say "remember that ..." and it keeps the fact for every future chat. See [Memory](#memory).
+- **Pictures and files:** paste, drop or attach (Ctrl+Shift+A) pictures, PDFs and text files. They show as small tiles in the typing box with an x to remove them, and as a thumbnail in the chat.
+- **Good-looking replies:** tables, code with Copy buttons, links, lists, right-to-left text and embedded images.
+- **Light on the PC:** about 0.7 MB on disk and about 9 to 14 MB of RAM with the window open. See [Performance](#performance).
+
+## Install
 
 - **Setup:** run `LitePilot-<version>-Setup.exe` (per-user, no admin rights). LitePilot checks for a newer release once a day. When one is available it asks: Update now (downloads, verifies and restarts once no reply is being written), Later, or Never show again. Settings > Startup has a switch to turn checks off.
 - **Portable:** unzip `LitePilot-<version>-Portable.zip` and run `LitePilot.exe`. Settings and chats stay beside it; API keys stay in Windows Credential Manager on that PC. Portable copies update from the same release feed.
@@ -36,6 +47,42 @@ Replies show text, tables, code, links, and embedded PNG, JPEG, and GIF images. 
 The Copilot-key shortcut is on by default and registers Win+Shift+F23. Turn off **Open with the Copilot key** in Settings > Shortcut and startup to opt out. If Windows or another app owns it, normal registration fails. On Windows 11, check Settings > Personalization > Text input > Customize Copilot key on keyboard and try Search or Custom; choices vary, and this does not guarantee that Windows releases the shortcut.
 
 The **global hook fallback** is also on by default and can be turned off separately in Settings. If both Copilot options are enabled and normal registration fails, LitePilot installs a system-wide low-level keyboard hook to intercept that shortcut; it passes other keys through. Security software may flag global hooks, and Windows or keyboard implementations may still prevent this from working. Existing explicit settings are preserved.
+
+## Memory
+
+<p>
+  <img src="screenshots/memory-mode.png" alt="Chat memory settings" width="380">
+  <img src="screenshots/memory-list.png" alt="Your memories: search, delete, tidy up" width="380">
+</p>
+
+LitePilot keeps a short list of facts about you and uses them in every chat, on every account.
+
+- **Add and remove in chat:** "remember that I live in Colchester", "forget that ...". Ctrl+Shift+Z undoes the last change. Only you add memories, never the AI, and anything that looks like a password or key is refused.
+- **Stored safely:** the list is encrypted with Windows' own protection and lives in LitePilot's folder. Up to 2000 facts (changeable).
+- **Memory mode** (Settings > Chat memory), the same for every account:
+  - **Engine** (ChatGPT and Claude sign-in): facts plus the AI's own memory. Claude saves personal facts in LitePilot's folder. Codex learns from saved chats at least an hour after they end, using a little of your plan.
+  - **Local:** only your facts are sent with each chat. When the list is long, only the facts related to the question are sent. This is the mode for API keys.
+  - **Off:** nothing is remembered or sent.
+- **Your memories:** search, delete one, clear all, or **Tidy up repeats** to remove facts that only repeat a more detailed one. **Tidy with AI** (off by default) can also merge repeats, after you review them.
+- **Move them:** import facts from the clipboard, copy a ready-made prompt that asks another AI what it knows about you, or save a plain text file to Downloads. **Back up and move** exports settings, facts and Claude's own memory in one passphrase-encrypted file that opens on any PC. API keys and sign-ins are not included.
+- **Limits and sharing:** one shared list for every account, or a list per account.
+
+## Menus and settings
+
+<p>
+  <img src="screenshots/menu.png" alt="The quick menu" width="380">
+  <img src="screenshots/history.png" alt="Previous chats" width="380">
+</p>
+
+The menu button opens quick actions (new chat, history, keep on top, copy, dictate, taskbar, settings, shortcuts). Ctrl+H lists previous chats with search.
+
+<p>
+  <img src="screenshots/settings.png" alt="Settings" width="250">
+  <img src="screenshots/appearance.png" alt="Appearance" width="250">
+  <img src="screenshots/keys.png" alt="Keyboard shortcuts" width="250">
+</p>
+
+Settings cover accounts and API keys, the shortcut and startup options, appearance (theme, colors, font, size, spacing), every keyboard shortcut, performance, memory, your data and backups. Dictation (Windows voice typing) is off until you turn it on.
 
 ## Build
 
