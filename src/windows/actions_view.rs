@@ -77,6 +77,7 @@ pub fn open() {
             WS_CHILD | WS_VISIBLE | WS_VSCROLL | (LBS_OWNERDRAWFIXED | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT) as u32,
             x, top, cw, app::pill_top() - s(8) - top, a.hwnd, ID_LIST as HMENU, inst, std::ptr::null());
         if a.theme.bg < 0x808080 { SetWindowTheme(list, w("DarkMode_Explorer").as_ptr(), std::ptr::null()); }
+        super::hover::attach_list(list);
         SEARCH.set(search);
         LIST.set(list);
         OLD_SEARCH.set(SetWindowLongPtrW(search, GWLP_WNDPROC, key_proc as *const () as isize));
@@ -272,6 +273,7 @@ pub unsafe fn draw(d: &DRAWITEMSTRUCT) {
             DeleteObject(p as _);
         }
     }
+    if !sel && super::hover::row_hovered(d.hwndItem, d.itemID) { super::hover::paint_row(d.hDC, &r, a.theme.bubble); }
     SetBkMode(d.hDC, 1);
     let old = SelectObject(d.hDC, a.font() as _);
     let dpi = GetDpiForWindow(a.hwnd).max(96) as i32;

@@ -90,12 +90,17 @@ pub fn apply_if_ready(was_visible: bool) {
 }
 
 /// The new copy, started by `apply_if_ready`: waits for the old copy to exit so the single-instance check
-/// passes. The old copy's file is removed on the next start (see `start`).
+/// passes, then removes the old copy's file. Windows refuses to delete a running exe, so this retries briefly.
 pub fn wait_for_old(pid: u32) {
     use windows_sys::Win32::Foundation::CloseHandle;
     use windows_sys::Win32::System::Threading::{OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE};
     unsafe {
         let h = OpenProcess(PROCESS_SYNCHRONIZE, 0, pid);
         if !h.is_null() { WaitForSingleObject(h, 20_000); CloseHandle(h); }
+    }
+    let old = old_exe(&exe_path());
+    for _ in 0..20 {
+        if std::fs::remove_file(&old).is_ok() || !old.exists() { break; }
+        std::thread::sleep(Duration::from_millis(250));
     }
 }

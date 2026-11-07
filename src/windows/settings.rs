@@ -21,6 +21,7 @@ const WM_SIGNIN: u32 = WM_APP + 3;
 const WM_CONFIRM_INSTALL: u32 = WM_APP + 4;
 /// Posted to export (0) or import (1) a backup once the key handler has finished: the file dialog pumps messages.
 const WM_BACKUP: u32 = WM_APP + 5;
+const WM_MOUSELEAVE_SETTINGS: u32 = 0x02A3;
 /// The AI finished proposing tidy merges: lParam is a Box<Result<Vec<Merge>, String>>.
 const WM_TIDY: u32 = WM_APP + 6;
 const CLASS: &str = "LitePilotSettings";
@@ -184,6 +185,8 @@ struct Fonts { body: HFONT, bold: HFONT, small: HFONT, icon: HFONT }
 thread_local! {
     static ST: RefCell<Option<St>> = const { RefCell::new(None) };
     static HOVER: Cell<usize> = const { Cell::new(usize::MAX) };
+    /// The pointer is over the "back" crumb at the top of a sub-page.
+    static BACK_HOVER: Cell<bool> = const { Cell::new(false) };
     /// The colour picker, while open: (which custom colour, [hue 0-360, saturation 0-1, brightness 0-1], active bar).
     static PICK: Cell<Option<(usize, [f32; 3], usize)>> = const { Cell::new(None) };
 }
@@ -1493,6 +1496,15 @@ unsafe fn paint(h: HWND, dc: HDC, st: &mut St) {
     FillRect(dc, &RECT { left: 0, top: 0, right: rc.right, bottom: bar }, bgb);
     DeleteObject(bgb as _);
     let crumb = if st.page == Page::Home { "Settings".to_string() } else { if st.page == Page::ManageMem { format!("\u{2190}   Settings  /  Chat memory  /  {}", page_title(st.page)) } else { format!("\u{2190}   Settings  /  {}", page_title(st.page)) } };
+    if st.page != Page::Home && BACK_HOVER.get() {
+        // The back crumb lights up under the pointer, so it reads as something to click.
+        let mut t = RECT { left: m, top: 0, right: rc.right, bottom: bar };
+        let old = SelectObject(dc, f.bold as _);
+        let u = w(&crumb);
+        DrawTextW(dc, u.as_ptr(), u.len() as i32 - 1, &mut t, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_CALCRECT);
+        SelectObject(dc, old);
+        super::images::smooth_round(dc, &RECT { left: m - s(10), top: s(6), right: t.right + s(10), bottom: bar - s(6) }, Some((mix(a.theme.bg, a.theme.text, 14), 255)), None, s(10));
+    }
     text(dc, f.bold, &crumb, RECT { left: m, top: 0, right: rc.right - m - s(150), bottom: bar }, a.theme.text, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
     if help_h > 0 {
         // The help line sits on its own band so row text can never run into it.
@@ -1577,6 +1589,15 @@ fn row_at(st: &St, x: i32, y: i32) -> Option<usize> {
     st.rects.iter().position(|r| x >= r.left && x < r.right && y >= r.top && y < r.bottom && y >= s(46) + if matches!(st.page, Page::Home | Page::Keys | Page::ManageMem) { s(44) } else { 0 })
 }
 
+/// True when the pointer is over something clickable: the back crumb on a sub-page, or a row that can be chosen.
+unsafe fn cursor_on_clickable(h: HWND) -> bool {
+    let mut pt = POINT { x: 0, y: 0 };
+    GetCursorPos(&mut pt);
+    ScreenToClient(h, &mut pt);
+    if pt.y < s(46) { return with(|st| st.page != Page::Home).unwrap_or(false); }
+    with(|st| row_at(st, pt.x, pt.y).is_some_and(|i| st.rows[i].kind.selectable())).unwrap_or(false)
+}
+
 unsafe extern "system" fn proc_(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     let a = app();
     match msg {
@@ -1633,8 +1654,25 @@ unsafe extern "system" fn proc_(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LR
             let i = with(|st| row_at(st, x, y)).flatten().unwrap_or(usize::MAX);
             // Dragging along a colour bar.
             if wp & 1 != 0 && PICK.get().is_some() { with(|st| { if i < st.rows.len() { pick_click(st, i, x, y); } }); InvalidateRect(h, std::ptr::null(), 0); }
-            if HOVER.get() != i { HOVER.set(i); InvalidateRect(h, std::ptr::null(), 0); }
+            let back = y < s(46) && with(|st| st.page != Page::Home).unwrap_or(false);
+            if HOVER.get() != i || BACK_HOVER.get() != back {
+                HOVER.set(i);
+                BACK_HOVER.set(back);
+                InvalidateRect(h, std::ptr::null(), 0);
+            }
+            let mut t = TRACKMOUSEEVENT { cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32, dwFlags: TME_LEAVE, hwndTrack: h, dwHoverTime: 0 };
+            TrackMouseEvent(&mut t);
             0
+        }
+        WM_MOUSELEAVE_SETTINGS => {
+            HOVER.set(usize::MAX);
+            BACK_HOVER.set(false);
+            InvalidateRect(h, std::ptr::null(), 0);
+            0
+        }
+        WM_SETCURSOR if (lp & 0xFFFF) as u32 == 1 && cursor_on_clickable(h) => {
+            super::hover::hand();
+            1
         }
         WM_MOUSEWHEEL => {
             let notches = ((wp >> 16) as i16 as i32) / 120;

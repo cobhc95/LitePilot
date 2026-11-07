@@ -19,6 +19,7 @@ mod secrets;
 mod sysinfo;
 mod tidy;
 mod settings;
+mod hover;
 mod updater;
 pub mod util;
 

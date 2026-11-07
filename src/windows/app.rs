@@ -1893,6 +1893,7 @@ unsafe extern "system" fn btn_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) ->
             InvalidateRect(h, std::ptr::null(), 0);
         }
         // Shortcuts work whichever button has focus, not only the typing box and the chat.
+        WM_SETCURSOR => { super::hover::hand(); return 1; }
         WM_KEYDOWN | WM_SYSKEYDOWN if on_key(wp as u16) => return 0,
         _ => {}
     }
@@ -2107,11 +2108,13 @@ unsafe extern "system" fn wndproc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
             if a.cfg.on_top && a.visible && IsIconic(h) == 0 && GetWindowLongPtrW(h, GWL_EXSTYLE) & WS_EX_TOPMOST as isize == 0 {
                 SetWindowPos(h, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
             }
+            lift_settings(a);
             DefWindowProcW(h, msg, wp, lp)
         }
         WM_ACTIVATE => {
             let a = app();
             set_title(wp & 0xFFFF != 0);
+            lift_settings(a);
             if wp & 0xFFFF != 0 && a.visible && !view_open() && !chip_menu::is_open() && !tile_menu::has_keys() { SetFocus(a.input); }
             if wp & 0xFFFF == 0 {
                 chip_menu::close();
@@ -2457,6 +2460,16 @@ pub fn run(show_now: bool) {
             if !s.is_null() && IsDialogMessageW(s, &m) != 0 { continue; }
             TranslateMessage(&m);
             DispatchMessageW(&m);
+        }
+    }
+}
+
+/// Settings stays over the chat while it is open. The chat is restacked often (clicks, keep-on-top), so
+/// Settings is lifted back above it each time.
+fn lift_settings(a: &App) {
+    unsafe {
+        if !a.settings.is_null() && IsWindowVisible(a.settings) != 0 {
+            SetWindowPos(a.settings, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
         }
     }
 }
