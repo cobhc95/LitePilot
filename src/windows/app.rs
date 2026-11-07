@@ -1087,7 +1087,15 @@ fn warm_engine() {
 
 pub fn show() {
     let a = app();
-    if a.visible { return unsafe { if IsIconic(a.hwnd) != 0 { ShowWindow(a.hwnd, SW_RESTORE); } SetWindowPos(a.hwnd, if a.cfg.on_top { HWND_TOPMOST } else { HWND_NOTOPMOST }, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE); SetForegroundWindow(a.hwnd); SetFocus(a.input); }; }
+    if a.visible { return unsafe {
+        if IsIconic(a.hwnd) != 0 { ShowWindow(a.hwnd, SW_RESTORE); }
+        SetWindowPos(a.hwnd, if a.cfg.on_top { HWND_TOPMOST } else { HWND_NOTOPMOST }, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        if !a.settings.is_null() && IsWindowVisible(a.settings) != 0 {
+            SetWindowPos(a.settings, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            SetForegroundWindow(a.settings);
+            SetFocus(a.settings);
+        } else { SetForegroundWindow(a.hwnd); SetFocus(a.input); }
+    }; }
     if !a.loaded {
         a.msgs = history::load(&a.chat);
         a.loaded = true;
@@ -1106,8 +1114,11 @@ pub fn show() {
         if a.cfg.hide_from_taskbar { taskbar_tab(a.hwnd, false); } // no taskbar button, but still in Alt+Tab
         // Topmost set while hidden doesn't stick; apply it again now the window is visible.
         SetWindowPos(a.hwnd, if a.cfg.on_top { HWND_TOPMOST } else { HWND_NOTOPMOST }, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-        SetForegroundWindow(a.hwnd);
-        SetFocus(a.input);
+        if !a.settings.is_null() && IsWindowVisible(a.settings) != 0 {
+            SetWindowPos(a.settings, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            SetForegroundWindow(a.settings);
+            SetFocus(a.settings);
+        } else { SetForegroundWindow(a.hwnd); SetFocus(a.input); }
     }
     warm_engine();
 }

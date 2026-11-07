@@ -9,7 +9,7 @@ cargo build --release || exit /b 1
 if not exist dist mkdir dist
 set "STAGE=%TEMP%\litepilot-portable-%RANDOM%%RANDOM%"
 mkdir "%STAGE%" || exit /b 1
-wix build -arch x64 installer\LitePilot.wxs -o dist\LitePilot-%VER%-Setup.msi || exit /b 1
+wix build -arch x64 -ext WixToolset.UI.wixext -ext WixToolset.Util.wixext installer\LitePilot.wxs -o dist\LitePilot-%VER%-Setup.msi || exit /b 1
 copy /y target\release\LitePilot.exe "%STAGE%\LitePilot.exe" >nul
 type nul > "%STAGE%\LitePilot.portable"
 if exist dist\LitePilot-%VER%-Portable.zip del /q dist\LitePilot-%VER%-Portable.zip

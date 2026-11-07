@@ -283,7 +283,7 @@ fn toggle_meta(t: Tog) -> (&'static str, &'static str, &'static str) {
     match t {
         Tog::Share => ("\u{E902}", "Share facts across models", "On: every account uses one list. Off: each account keeps its own"),
         Tog::Copilot => ("\u{E7F4}", "Open with the Copilot key", "Requires Win+Shift+F23 to be available"),
-        Tog::CopilotHook => ("\u{E7F4}", "Copilot key: global hook fallback", "Opt in: intercepts the shortcut system-wide if registration fails"),
+        Tog::CopilotHook => ("\u{E7F4}", "Copilot key: global hook fallback", "On by default: intercepts the shortcut if registration fails"),
         Tog::Autostart => ("\u{E7E8}", "Start with Windows", "Keeps LitePilot ready after you sign in to Windows"),
         Tog::Blur => ("\u{E8A7}", "Hide when clicking outside", "Hides the popup when you click another window"),
         Tog::Taskbar => ("\u{E8FC}", "Hide from the taskbar and Alt+Tab", "Open it with the shortcut or the tray icon"),

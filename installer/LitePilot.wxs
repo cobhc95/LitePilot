@@ -1,10 +1,19 @@
 <?xml version="1.0" encoding="utf-8"?>
-<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs" xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
   <Package Name="LitePilot" Manufacturer="LitePilot" Version="0.1.0"
-           ProductCode="C18D8FD5-F3A8-48FA-BF7B-21B8DBA52E01"
+           ProductCode="28E17362-AD30-4614-93BF-A753BB15497E"
            UpgradeCode="F34558FC-9FA7-4D59-BD92-4BD4D01245CC" Scope="perUser">
-    <MajorUpgrade DowngradeErrorMessage="A newer version of LitePilot is already installed." />
+    <MajorUpgrade AllowSameVersionUpgrades="yes" DowngradeErrorMessage="A newer version of LitePilot is already installed." />
     <MediaTemplate EmbedCab="yes" />
+    <WixVariable Id="WixUILicenseRtf" Value="installer\welcome.rtf" />
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOX" Value="1" />
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT" Value="Launch LitePilot" />
+    <Property Id="WixShellExecTarget" Value="[#LitePilotExe]" />
+    <CustomAction Id="LaunchApplication" BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)" DllEntry="WixShellExec" Impersonate="yes" Return="check" />
+    <UI>
+      <ui:WixUI Id="WixUI_Minimal" />
+      <Publish Dialog="ExitDialog" Control="Finish" Event="DoAction" Value="LaunchApplication" Condition="WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 AND NOT Installed" />
+    </UI>
 
     <!-- Do not take ownership of files installed by the previous EXE installer. -->
     <Property Id="LEGACYINSTALL">

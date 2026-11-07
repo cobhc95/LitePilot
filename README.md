@@ -33,13 +33,13 @@ _Version 0.1 alpha._
 
 Replies show text, tables, code, links, and embedded PNG, JPEG, and GIF images. Web images appear as links.
 
-The optional Copilot-key shortcut registers Win+Shift+F23. If Windows or another app owns it, normal registration fails. On Windows 11, check Settings > Personalization > Text input > Customize Copilot key on keyboard and try Search or Custom; choices vary, and this does not guarantee that Windows releases the shortcut.
+The Copilot-key shortcut is on by default and registers Win+Shift+F23. Turn off **Open with the Copilot key** in Settings > Shortcut and startup to opt out. If Windows or another app owns it, normal registration fails. On Windows 11, check Settings > Personalization > Text input > Customize Copilot key on keyboard and try Search or Custom; choices vary, and this does not guarantee that Windows releases the shortcut.
 
-Settings also offers an **opt-in global hook fallback**, off by default. If both Copilot options are enabled and normal registration fails, LitePilot installs a system-wide low-level keyboard hook to intercept that shortcut; it passes other keys through. Security software may flag global hooks, and Windows or keyboard implementations may still prevent this from working.
+The **global hook fallback** is also on by default and can be turned off separately in Settings. If both Copilot options are enabled and normal registration fails, LitePilot installs a system-wide low-level keyboard hook to intercept that shortcut; it passes other keys through. Security software may flag global hooks, and Windows or keyboard implementations may still prevent this from working. Existing explicit settings are preserved.
 
 ## Build
 
-The release build requires Rust, MSVC build tools, and [WiX Toolset 5](https://wixtoolset.org/) on PATH (for example, `dotnet tool install --global wix --version 5.0.2`).
+The release build requires Rust, MSVC build tools, and [WiX Toolset 5](https://wixtoolset.org/) on PATH (for example, `dotnet tool install --global wix --version 5.0.2`). Install its extensions with `wix extension add -g WixToolset.UI.wixext/5.0.2` and `wix extension add -g WixToolset.Util.wixext/5.0.2`.
 
 ```
 build-release.cmd

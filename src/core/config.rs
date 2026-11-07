@@ -131,8 +131,8 @@ impl Default for Config {
         Config {
             active: "claude".into(),
             hotkey: "Alt+Space".into(),
-            copilot_key: false,
-            copilot_hook_fallback: false,
+            copilot_key: true,
+            copilot_hook_fallback: true,
             start_with_windows: false,
             hide_on_blur: false,
             dictation: true,
@@ -192,8 +192,8 @@ impl Config {
         Config {
             active: st("active", &d.active),
             hotkey: st("hotkey", &d.hotkey),
-            copilot_key: v["copilot_key"].as_bool().unwrap_or(false),
-            copilot_hook_fallback: v["copilot_hook_fallback"].as_bool().unwrap_or(false),
+            copilot_key: v["copilot_key"].as_bool().unwrap_or(d.copilot_key),
+            copilot_hook_fallback: v["copilot_hook_fallback"].as_bool().unwrap_or(d.copilot_hook_fallback),
             start_with_windows: v["start_with_windows"].as_bool().unwrap_or(false),
             hide_on_blur: v["hide_on_blur"].as_bool().unwrap_or(false),
             dictation: v["dictation"].as_bool().unwrap_or(true),
@@ -295,15 +295,17 @@ mod tests {
         assert!(c.palette_colors().is_none());
     }
     #[test]
-    fn copilot_hook_is_opt_in_and_persists() {
-        let mut c = Config::from_value(&json!({"copilot_key": true}));
-        assert!(!c.copilot_hook_fallback);
-        c.copilot_hook_fallback = true;
+    fn copilot_defaults_on_and_explicit_opt_out_persists() {
+        let defaults = Config::from_value(&json!({}));
+        assert!(defaults.copilot_key && defaults.copilot_hook_fallback);
+        let c = Config::from_value(&json!({"copilot_key": false, "copilot_hook_fallback": false}));
+        assert!(!c.copilot_key && !c.copilot_hook_fallback);
         let dir = std::env::temp_dir().join(format!("lp-copilot-cfg-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join("config.json");
         c.save(&p).unwrap();
-        assert!(Config::load(&p).copilot_hook_fallback);
+        let loaded = Config::load(&p);
+        assert!(!loaded.copilot_key && !loaded.copilot_hook_fallback);
         std::fs::remove_dir_all(dir).unwrap();
     }
     #[test]
