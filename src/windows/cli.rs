@@ -92,15 +92,21 @@ pub fn sign_in(kind: &str) {
     use std::os::windows::process::CommandExt;
     let exe = find(kind).unwrap_or_else(|| default_path(kind));
     let login = if kind == "claude" { "auth login" } else { "login" };
+    // The official installer script is fetched here and saved to a temp file; PowerShell then runs it in a
+    // visible console. No execution-policy override is needed: it is run as text, not as a script file.
+    let script_file = std::env::temp_dir().join(format!("litepilot-install-{kind}.ps1"));
+    let fetched = super::http::fetch(install_url(kind), 2 * 1024 * 1024).is_some_and(|b| std::fs::write(&script_file, b).is_ok());
+    let install = if fetched { "Invoke-Expression ([IO.File]::ReadAllText($env:LP_SCRIPT))" } else { "Write-Host 'Could not download the installer. Check your connection.' -ForegroundColor Red; throw 'download failed'" };
     let script = format!(
-        "$ErrorActionPreference='Stop'; try {{ if (-not (Test-Path $env:LP_EXE)) {{ irm '{}' | iex }}; & $env:LP_EXE {login} }} catch {{ Write-Host $_ -ForegroundColor Red; pause }}",
-        install_url(kind)
+        "$ErrorActionPreference='Stop'; try {{ if (-not (Test-Path $env:LP_EXE)) {{ {install} }}; & $env:LP_EXE {login} }} catch {{ Write-Host $_ -ForegroundColor Red; pause }}"
     );
     let _ = std::process::Command::new("powershell.exe")
-        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", &script])
+        .args(["-NoProfile", "-Command", &script])
         .env("LP_EXE", &exe)
+        .env("LP_SCRIPT", &script_file)
         .creation_flags(0x10) // CREATE_NEW_CONSOLE
         .status();
+    let _ = std::fs::remove_file(&script_file);
 }
 
 pub fn sign_out(kind: &str) {

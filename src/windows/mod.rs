@@ -27,6 +27,10 @@ pub fn run() {
     if a.iter().any(|x| x == "--uninstall") {
         return install::uninstall();
     }
+    if let Some(i) = a.iter().position(|x| x == "--finish-uninstall") {
+        let pid = a.get(i + 1).and_then(|p| p.parse().ok()).unwrap_or(0);
+        return install::finish_uninstall(pid, std::path::PathBuf::from(a.get(i + 2).cloned().unwrap_or_default()));
+    }
     // The read-only memory lookup an assistant calls as a tool: LitePilot.exe --memory-mcp <folder with memory.bin>.
     if let Some(i) = a.iter().position(|x| x == "--memory-mcp") {
         let dir = std::path::PathBuf::from(a.get(i + 1).cloned().unwrap_or_default());
