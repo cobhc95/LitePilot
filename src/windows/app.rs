@@ -1149,8 +1149,11 @@ pub fn hide() {
     key_badges::stop();
     a.visible = false;
     unsafe {
+        // Hand focus back only if LitePilot still has it. If you already moved to another window (or minimized
+        // LitePilot), that window keeps focus; pulling an older one forward is what disturbed other windows.
+        let had_focus = GetForegroundWindow() == a.hwnd && IsIconic(a.hwnd) == 0;
         ShowWindow(a.hwnd, SW_HIDE);
-        if !a.prev.is_null() { SetForegroundWindow(a.prev); }
+        if had_focus && !a.prev.is_null() && IsWindow(a.prev) != 0 && IsIconic(a.prev) == 0 { SetForegroundWindow(a.prev); }
         set_text(a.view, "");
         images::settle();
         code::clear();
@@ -2112,7 +2115,7 @@ unsafe extern "system" fn wndproc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                 chip_menu::close();
                 tile_menu::close();
                 // Switching apps must not drop "keep on top".
-                if a.cfg.on_top && a.visible { SetWindowPos(a.hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE); }
+                if a.cfg.on_top && a.visible && IsIconic(a.hwnd) == 0 { SetWindowPos(a.hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE); }
             }
             if wp & 0xFFFF == 0 && a.cfg.hide_on_blur && a.visible { hide(); }
             0

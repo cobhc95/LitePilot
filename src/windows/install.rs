@@ -61,12 +61,26 @@ unsafe fn make_shortcut(link: &std::path::Path, target: &std::path::Path) {
     std::mem::transmute::<usize, Release>(*vt.add(2))(obj);
 }
 
+/// Closes any running LitePilot so the installed exe can be replaced: asks it to quit, then force-ends whatever
+/// is left (this Setup exe has a different name, so it is never hit).
+fn stop_running(exe: &std::path::Path) {
+    use std::os::windows::process::CommandExt;
+    super::app::close_running();
+    let _ = std::process::Command::new("taskkill").args(["/F", "/T", "/IM", "LitePilot.exe"]).creation_flags(0x0800_0000).status();
+    for _ in 0..20 {
+        // A running exe can't be opened for writing.
+        if !exe.exists() || std::fs::OpenOptions::new().append(true).open(exe).is_ok() { break; }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+}
+
 pub fn install() {
     let null = std::ptr::null_mut();
     if message(null, "Install LitePilot for this Windows user?", MB_OKCANCEL | MB_ICONQUESTION) != IDOK { return; }
     let dir = install_dir();
     let exe = dir.join("LitePilot.exe");
     let src = exe_path();
+    stop_running(&exe);
     // Windows' file-copy call refuses some locations with "The parameter is incorrect" (some drives, cloud or
     // protected folders). Reading and writing the file ourselves works wherever the file can be read.
     let res = std::fs::create_dir_all(&dir).and_then(|_| match std::fs::copy(&src, &exe) {
