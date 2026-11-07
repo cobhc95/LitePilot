@@ -213,12 +213,36 @@ fn register(label: &str, url: &str) -> Option<usize> {
     })
 }
 
+/// A picture file the user attached (kept apart from `register` so a reply can never name a local file).
+fn register_file(name: &str, path: &std::path::Path) -> Option<usize> {
+    let key = hash(&format!("file:{}", path.display()));
+    IMGS.with_borrow_mut(|v| {
+        if let Some(i) = v.iter().position(|m| m.key == key) { return (!v[i].failed).then_some(i); }
+        if v.len() >= MAX_ITEMS || std::fs::metadata(path).ok()?.len() > crate::core::attach::MAX_FILE { return None; }
+        let bytes = std::fs::read(path).ok()?;
+        let px = image_size(&bytes).filter(|s| s.0 > 0 && s.1 > 0)?;
+        v.push(Img { key, label: name.to_string(), bytes, shrunk: false, px, thumb: std::ptr::null_mut(), thumb_px: (0, 0), failed: false, remote: None, loading: false });
+        Some(v.len() - 1)
+    })
+}
+
+/// A row of thumbnails for the pictures attached to one message. `salt` (the message text) keeps two messages
+/// with the same picture from sharing a row.
+pub fn register_files(pics: &[(String, std::path::PathBuf)], salt: &str) -> Option<(u32, u32)> {
+    let ids: Vec<usize> = pics.iter().filter_map(|(n, p)| register_file(n, p)).collect();
+    if ids.is_empty() { return None; }
+    make_gallery(hash(&format!("{}|{salt}", pics[0].1.display())), ids)
+}
+
 /// A row of pictures. Returns (gallery id, row height in twips), or None if none can be shown.
 pub fn register_gallery(pics: &[(&str, &str)]) -> Option<(u32, u32)> {
     let ids: Vec<usize> = pics.iter().filter_map(|(l, u)| register(l, u)).collect();
     if ids.is_empty() { return None; }
     // Keyed by the first picture, so a row that grows while a reply streams keeps its place.
-    let key = hash(pics[0].1);
+    make_gallery(hash(pics[0].1), ids)
+}
+
+fn make_gallery(key: u64, ids: Vec<usize>) -> Option<(u32, u32)> {
     GALLERIES.with_borrow_mut(|g| {
         let i = match g.iter().position(|x| x.key == key) {
             Some(i) => { g[i].imgs = ids; i }

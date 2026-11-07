@@ -131,6 +131,11 @@ thread_local! {
     /// False: tables wrap to fit. True: tables keep their natural width and the chat scrolls sideways.
     static TABLE_SCROLL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
+thread_local! {
+    /// Where attached files live, so user messages can show their pictures as thumbnails.
+    static ATT_DIR: std::cell::RefCell<Option<std::path::PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+pub fn set_attach_dir(d: std::path::PathBuf) { ATT_DIR.set(Some(d)); }
 pub fn set_width(twips: usize) { WIDTH.set(twips.max(3000)); }
 pub fn set_table_scroll(on: bool) { TABLE_SCROLL.set(on); }
 #[allow(non_snake_case)]
@@ -389,6 +394,23 @@ pub fn message(m: &Msg, th: &Theme) -> String {
         // The bubble: one right-aligned shaded cell sized to the text. Zero-width marks at its first and last
         // character let the painter find it and round its corners (bubbles.rs). Text is shown as typed.
         // The widest line is measured in the real font (in twips) so the bubble hugs the words.
+        // Attached pictures show as a row of small thumbnails above the bubble; their [📎 name] marks are dropped.
+        let mut shown = m.text.clone();
+        let pics: Vec<(String, std::path::PathBuf)> = ATT_DIR.with_borrow(|d| match d {
+            Some(d) => crate::core::attach::names(&m.text).into_iter()
+                .filter(|n| matches!(crate::core::attach::kind(n), crate::core::attach::Kind::Image(_)) && d.join(n).is_file())
+                .map(|n| { let p = d.join(&n); (n, p) }).collect(),
+            None => Vec::new(),
+        });
+        if let Some((id, h)) = (!pics.is_empty()).then(|| super::images::register_files(&pics, &m.text)).flatten() {
+            o.push_str(&format!("\\pard\\ltrpar\\sl-{h}\\slmult0\\sb120\\sa40{{\\cf6\\fs2 "));
+            if let Some(c) = char::from_u32(super::images::FIRST_CHAR + id) { esc(&mut o, &c.to_string()); }
+            o.push_str("}\\par\\pard ");
+            for (n, _) in &pics { shown = shown.replace(&crate::core::attach::token(n), ""); }
+            shown = shown.trim().to_string();
+        }
+        if shown.is_empty() { o.push('}'); return o; }
+        let m = &Msg::new("user", &shown);
         let dir = if rtl(&m.text) { "\\rtlpar\\qr" } else { "\\ltrpar" };
         let wide = (text_twips(&th.font, th.size, &m.text) + 2 * BUBBLE_PAD + 90).clamp(700, CARD_W() * 4 / 5);
         // A border in the bubble's own color; without one RichEdit draws a light guide line around the cell.

@@ -975,7 +975,7 @@ fn render_view(mode: Scroll) {
 /// The empty reply that's still loading holds a line per status step; any other message is itself.
 fn message_rtf(a: &App, m: &Msg, last: bool) -> String {
     if last && a.streaming && m.role == "assistant" && m.text.is_empty() && !a.steps.is_empty() { rtf::status_space(a.steps.len(), &a.theme) }
-    else { rtf::message(m, &a.theme) }
+    else { rtf::set_attach_dir(a.data.join("attachments")); rtf::message(m, &a.theme) }
 }
 
 fn status_showing(a: &App) -> bool {
@@ -1323,7 +1323,7 @@ fn on_event(gen: u64, e: Event) {
             finish(a);
             if a.visible {
                 let m = Msg::new("error", t);
-                stream_in(a.view, text_len(a.view), &rtf::message(&m, &a.theme));
+                stream_in(a.view, text_len(a.view), &message_rtf(a, &m, false));
                 scroll_bottom(a.view);
                 a.msgs.push(m);
             }
