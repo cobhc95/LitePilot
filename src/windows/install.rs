@@ -9,7 +9,7 @@ pub fn is_setup_exe() -> bool {
     exe_path().file_name().is_some_and(|n| n.to_string_lossy().to_lowercase().contains("setup"))
 }
 
-fn install_dir() -> PathBuf {
+pub fn install_dir() -> PathBuf {
     PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap_or_default()).join(r"Programs\LitePilot")
 }
 

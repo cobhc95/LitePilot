@@ -19,6 +19,7 @@ mod secrets;
 mod sysinfo;
 mod tidy;
 mod settings;
+mod updater;
 pub mod util;
 
 pub fn run() {
@@ -43,5 +44,9 @@ pub fn run() {
     if install::is_setup_exe() {
         return install::install();
     }
+    if let Some(i) = a.iter().position(|x| x == "--after-update") {
+        updater::wait_for_old(a.get(i + 1).and_then(|p| p.parse().ok()).unwrap_or(0));
+    }
+    updater::start();
     app::run(!a.iter().any(|x| x == "--background"));
 }

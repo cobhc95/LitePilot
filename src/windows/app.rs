@@ -35,6 +35,7 @@ const WM_QUIT_APP: u32 = WM_APP + 5;
 const ID_RENDER: usize = 1;
 const ID_COPIED: usize = 2;
 const ID_BLINK: usize = 3;
+const ID_UPDATE: usize = 4;
 thread_local! { static CARET_HIDDEN: Cell<bool> = const { Cell::new(false) }; }
 const WM_MOUSELEAVE_: u32 = 0x2A3;
 const CMD_OPEN: usize = 100;
@@ -2030,6 +2031,7 @@ unsafe extern "system" fn wndproc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                     CARET_HIDDEN.set(!CARET_HIDDEN.get());
                 }
             }
+            if wp == ID_UPDATE && !app().streaming { super::updater::apply_if_ready(app().visible); }
             if wp == key_badges::TIMER { key_badges::show(); }
             if wp == ID_COPIED {
                 KillTimer(h, ID_COPIED);
@@ -2407,6 +2409,7 @@ pub fn run(show_now: bool) {
         a.old_input = SetWindowLongPtrW(a.input, GWLP_WNDPROC, child_proc as *const () as isize);
         a.old_view = SetWindowLongPtrW(a.view, GWLP_WNDPROC, child_proc as *const () as isize);
         SetTimer(hwnd, ID_BLINK, GetCaretBlinkTime().clamp(250, 1000), None);
+        SetTimer(hwnd, ID_UPDATE, 60_000, None); // applies a downloaded update once no reply is streaming
         let icc = INITCOMMONCONTROLSEX { dwSize: std::mem::size_of::<INITCOMMONCONTROLSEX>() as u32, dwICC: 0x4 }; // ICC_BAR_CLASSES
         InitCommonControlsEx(&icc);
         a.tip = CreateWindowExW(WS_EX_TOPMOST, w("tooltips_class32").as_ptr(), std::ptr::null(), WS_POPUP | 0x1 | 0x2, // TTS_ALWAYSTIP | TTS_NOPREFIX

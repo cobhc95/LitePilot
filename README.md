@@ -2,15 +2,15 @@
 
 A tiny Windows popup for AI chat. Press a shortcut, ask, press Esc.
 
-_Version 0.1 alpha._
+_Version 0.1.2._
 
 <p>
   <img src="screenshots/chat.png" alt="The LitePilot chat popup" width="380">
   <img src="screenshots/settings.png" alt="LitePilot settings" width="380">
 </p>
 
-- **Setup:** run `LitePilot-0.1-alpha-Setup.msi` (per-user, no admin rights). If you installed an older EXE setup, uninstall it first and choose to keep your settings. Before uninstalling the MSI, turn off Start with Windows in LitePilot settings. MSI uninstall leaves settings and chats in place.
-- **Portable:** unzip and run `LitePilot.exe`. Settings and chats stay beside it; API keys stay in Windows Credential Manager on that PC.
+- **Setup:** run `LitePilot-<version>-Setup.exe` (per-user, no admin rights). Installed copies update themselves: LitePilot checks GitHub for newer releases, downloads the portable ZIP, verifies its SHA-256 and restarts into it once no reply is streaming. Uninstall keeps settings and chats unless you choose otherwise.
+- **Portable:** unzip `LitePilot-<version>-Portable.zip` and run `LitePilot.exe`. Settings and chats stay beside it; API keys stay in Windows Credential Manager on that PC. Portable copies update from the same release feed.
 - **API key:** Settings > pick a preset > Add profile > enter model and key > Save.
 - **Claude or ChatGPT login:** Settings > pick the profile > Sign in. The official CLI downloads on first sign-in, after you confirm.
 
@@ -39,10 +39,10 @@ The **global hook fallback** is also on by default and can be turned off separat
 
 ## Build
 
-The release build requires Rust, MSVC build tools, and [WiX Toolset 5](https://wixtoolset.org/) on PATH (for example, `dotnet tool install --global wix --version 5.0.2`). Install its extensions with `wix extension add -g WixToolset.UI.wixext/5.0.2` and `wix extension add -g WixToolset.Util.wixext/5.0.2`.
+The release build requires Rust and MSVC build tools. The version comes from `version` in Cargo.toml, the one master version for the app, the file properties and the release file names.
 
 ```
-build-release.cmd
+build-release.cmd    # writes dist\LitePilot-<version>-Setup.exe and dist\LitePilot-<version>-Portable.zip
 python tools/e2e.py <empty-temp-folder> [--cli]
 ```
 

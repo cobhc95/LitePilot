@@ -37,7 +37,8 @@ fn parse_url(u: &str) -> Option<Url> {
 pub fn fetch(url: &str, max: usize) -> Option<Vec<u8>> {
     let u = parse_url(url).filter(|u| u.secure)?;
     unsafe {
-        let s = WinHttpOpen(w("LitePilot/0.1 (Windows desktop chat app; shows pictures in replies)").as_ptr(), WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, std::ptr::null(), std::ptr::null(), 0);
+        let agent = w(&format!("LitePilot/{} (Windows desktop chat app; shows pictures in replies)", crate::core::VERSION));
+        let s = WinHttpOpen(agent.as_ptr(), WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, std::ptr::null(), std::ptr::null(), 0);
         if s.is_null() { return None; }
         WinHttpSetTimeouts(s, 0, 10_000, 10_000, 20_000);
         let c = WinHttpConnect(s, w(&u.host).as_ptr(), u.port, 0);
@@ -75,7 +76,8 @@ pub fn stream(req: &HttpRequest, f: ApiFormat, cancel: &HttpCancel, sink: &dyn F
         sink(Event::Error(format!("{what} failed (Windows error {code}). Check the base URL and your connection.")))
     };
     unsafe {
-        let s = WinHttpOpen(w("LitePilot/0.1").as_ptr(), WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, std::ptr::null(), std::ptr::null(), 0);
+        let agent = w(&format!("LitePilot/{}", crate::core::VERSION));
+        let s = WinHttpOpen(agent.as_ptr(), WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, std::ptr::null(), std::ptr::null(), 0);
         if s.is_null() { return fail("Network setup"); }
         WinHttpSetTimeouts(s, 0, 15_000, 30_000, 180_000);
         let c = WinHttpConnect(s, w(&u.host).as_ptr(), u.port, 0);

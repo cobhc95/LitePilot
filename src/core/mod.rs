@@ -1,5 +1,5 @@
-/// The release name shown in the app, the installer and the file properties.
-pub const VERSION: &str = "0.1 alpha";
+/// The one app version: Cargo.toml's `version`. Shown in Settings, the uninstall entry and HTTP user agents.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub mod config;
 pub mod attach;
 pub mod backup;
@@ -10,6 +10,7 @@ pub mod memory;
 pub mod protocol;
 pub mod resident;
 pub mod tidy;
+pub mod update;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Msg {
