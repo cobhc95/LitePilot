@@ -41,6 +41,7 @@ _Version 0.1.7._
 | Ctrl+Shift+C | Copy the last code block or table |
 | Ctrl+, | Settings (Tab or arrows, Enter, Esc, 1 to 5 on the first page) |
 | F1 | List of shortcuts |
+| Right-click (typing box or chat) | Undo, cut, copy, paste, delete, select all; selects the word under the pointer |
 
 Replies show text, tables, code, links, and embedded PNG, JPEG, and GIF images. Web images appear as links.
 

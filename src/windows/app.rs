@@ -1633,9 +1633,65 @@ unsafe fn scroll_by(h: HWND, dy: i32) {
     scroll_to(h, pos.saturating_add(dy));
 }
 
+/// The right-click menu for the typing box (undo, cut, copy, paste, delete, select all) and the chat (copy,
+/// select all). A right-click outside the selection first selects the word under the pointer. `at` is a screen
+/// point, or None when opened from the keyboard (Shift+F10 or the menu key).
+unsafe fn context_menu(h: HWND, at: Option<(i32, i32)>) {
+    let a = app();
+    let is_input = h == a.input;
+    let pick = |m: u32, wp: usize, lp: isize| SendMessageW(h, m, wp, lp);
+    let sel = || { let (mut s, mut e) = (0i32, 0i32); pick(0xB0, &mut s as *mut _ as usize, &mut e as *mut _ as isize); (s, e) }; // EM_GETSEL
+    SetFocus(h);
+    let (x, y) = at.unwrap_or_else(|| { let mut r: RECT = std::mem::zeroed(); GetWindowRect(h, &mut r); (r.left + 24, r.top + 24) });
+    if at.is_some() {
+        let mut c = POINT { x, y };
+        ScreenToClient(h, &mut c);
+        let idx = pick(0xD7, 0, &c as *const _ as isize) as i32; // EM_CHARFROMPOS
+        let (s, e) = sel();
+        if idx >= 0 && (idx < s || idx >= e) {
+            let (ws, we) = (pick(0x44C, 6, idx as isize) as i32, pick(0x44C, 7, idx as isize) as i32); // EM_FINDWORDBREAK: word start, word end
+            if we > ws { pick(0xB1, ws as usize, we as isize); } else { pick(0xB1, idx as usize, idx as isize); } // EM_SETSEL
+        }
+    }
+    let has_sel = { let (s, e) = sel(); e > s };
+    let has_text = text_len(h) > 0;
+    let m = CreatePopupMenu();
+    let item = |id: usize, label: &str, on: bool| { AppendMenuW(m, MF_STRING | if on { 0 } else { MF_GRAYED }, id, w(label).as_ptr()); };
+    if is_input {
+        item(1, "Undo\tCtrl+Z", pick(0xC6, 0, 0) != 0); // EM_CANUNDO
+        AppendMenuW(m, MF_SEPARATOR, 0, std::ptr::null());
+        item(2, "Cut\tCtrl+X", has_sel);
+    }
+    item(3, "Copy\tCtrl+C", has_sel);
+    if is_input {
+        item(4, "Paste\tCtrl+V", pick(0x432, 0, 0) != 0); // EM_CANPASTE (any format)
+        item(5, "Delete", has_sel);
+    }
+    AppendMenuW(m, MF_SEPARATOR, 0, std::ptr::null());
+    item(6, "Select all\tCtrl+A", has_text);
+    let cmd = TrackPopupMenu(m, TPM_RETURNCMD | TPM_RIGHTBUTTON, x, y, 0, a.hwnd, std::ptr::null());
+    DestroyMenu(m);
+    match cmd {
+        1 => { pick(WM_UNDO, 0, 0); }
+        2 => { pick(WM_CUT, 0, 0); }
+        3 => { pick(WM_COPY, 0, 0); }
+        4 => { pick(WM_PASTE, 0, 0); } // goes through child_proc, so pictures and files paste as attachments
+        5 => { pick(0xC2, 0, w("").as_ptr() as isize); } // EM_REPLACESEL with nothing
+        6 => { pick(0xB1, 0, -1); }
+        _ => {}
+    }
+}
+
 unsafe extern "system" fn child_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     let a = app();
     let is_input = h == a.input;
+    // Right-click: our own menu, and the selection stays as it was until the menu decides.
+    match msg {
+        WM_RBUTTONDOWN => return 0,
+        WM_RBUTTONUP => { let mut p = POINT { x: lp as i16 as i32, y: (lp >> 16) as i16 as i32 }; ClientToScreen(h, &mut p); context_menu(h, Some((p.x, p.y))); return 0; }
+        WM_CONTEXTMENU => { context_menu(h, if lp == -1 { None } else { Some((lp as i16 as i32, (lp >> 16) as i16 as i32)) }); return 0; }
+        _ => {}
+    }
     if msg == WM_PAINT && !is_input {
         // The whole chat is drawn off-screen (text, rounded bubbles, pictures, status) and shown in one go,
         // so there is no moment with square bubble corners or half-drawn pieces.
