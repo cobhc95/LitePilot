@@ -5,8 +5,7 @@ A tiny Windows popup for AI chat. Press a shortcut, ask, press Esc.
 _Version 0.1.8._
 
 <p>
-  <img src="screenshots/chat.png" alt="A reply with a table and code, in the LitePilot popup" width="380">
-  <img src="screenshots/attach.png" alt="A picture attached in the typing box" width="380">
+  <img src="screenshots/chat.png" alt="A reply with a table and code in the LitePilot popup" width="560">
 </p>
 
 ## What it does

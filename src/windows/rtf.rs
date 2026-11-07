@@ -149,14 +149,23 @@ fn copy_link(out: &mut String, text: String) {
     out.push_str("}}}");
 }
 
-/// The bar across the top of a card: a label on the left, Copy on the right.
-fn card_bar(out: &mut String, label: &str, text: String, width: usize) {
-    out.push_str(&format!("\\trowd\\trgaph120{CELL_EDGE}\\clcbpat5\\cellx{}{CELL_EDGE}\\clcbpat5\\cellx{width}", width * 2 / 3));
-    out.push_str("\\pard\\intbl\\ltrpar\\sb40\\sa40{\\fs18\\cf2 ");
+/// The bar across the top of a card: a label on the left, Copy on the right. Code cards shade it; tables
+/// leave it plain, so the table below reads as one clean card.
+fn card_bar(out: &mut String, label: &str, text: String, width: usize, shaded: bool) {
+    // RichEdit draws a light guide line around a cell with no border set, so the plain bar gets borders in the
+    // page's own color (color 6) instead.
+    let cell = if shaded { format!(r"{CELL_EDGE}\clcbpat5") } else { edges(6, 6, 6, 6) };
+    out.push_str(&format!(r"\trowd\trgaph120{cell}\cellx{}{cell}\cellx{width}", width * 2 / 3));
+    out.push_str(r"\pard\intbl\ltrpar\sb40\sa40{\fs18\cf2 ");
     esc(out, label);
-    out.push_str("}\\cell\\pard\\intbl\\qr\\sb40\\sa40 ");
+    out.push_str(r"}\cell\pard\intbl\qr\sb40\sa40 ");
     copy_link(out, text);
-    out.push_str("\\cell\\row\\pard ");
+    out.push_str(r"\cell\row\pard ");
+}
+
+/// Cell borders (top, left, bottom, right), each a color index from the table of colors.
+fn edges(t: u8, l: u8, b: u8, r: u8) -> String {
+    format!(r"\clbrdrt\brdrs\brdrw5\brdrcf{t}\clbrdrl\brdrs\brdrw5\brdrcf{l}\clbrdrb\brdrs\brdrw5\brdrcf{b}\clbrdrr\brdrs\brdrw5\brdrcf{r}")
 }
 
 fn is_keyword(w: &str) -> bool {
@@ -203,7 +212,7 @@ fn code_line(out: &mut String, line: &str) {
 }
 
 fn code_card(out: &mut String, lang: &str, lines: &[&str]) {
-    card_bar(out, if lang.is_empty() { "Code" } else { lang }, lines.join("\r\n"), CARD_W());
+    card_bar(out, if lang.is_empty() { "Code" } else { lang }, lines.join("\r\n"), CARD_W(), true);
     out.push_str(&format!("\\trowd\\trgaph120{CELL_EDGE}\\clcbpat4\\cellx{}\\pard\\intbl\\ltrpar\\sb60\\sa60{{\\f1\\fs19 ", CARD_W()));
     for (n, l) in lines.iter().enumerate() {
         if n > 0 { out.push_str("\\line "); }
@@ -227,7 +236,7 @@ fn cells(l: &str) -> Vec<&str> {
 /// scrolling tables keep the room their text needs.
 fn column_edges(head: &[&str], rows: &[&str], n: usize) -> Vec<usize> {
     const CHAR_TW: usize = 105; // an average character at the body size, in twips
-    const PAD_TW: usize = 260; // the cell's inner gap and border
+    const PAD_TW: usize = 380; // the cell's inner gap and border
     let mut need = vec![3usize; n];
     for (i, c) in head.iter().enumerate().take(n) { need[i] = need[i].max(c.chars().count() + 1); }
     for l in rows {
@@ -248,20 +257,24 @@ fn column_edges(head: &[&str], rows: &[&str], n: usize) -> Vec<usize> {
     widths.iter().scan(0, |acc, w| { *acc += w; Some(*acc) }).collect()
 }
 
-fn table_row(out: &mut String, cs: &[&str], edges: &[usize], head: bool) {
-    let n = edges.len();
-    out.push_str("\\trowd\\trgaph80");
+/// One table row in the clean card style: a tinted, muted header, thin lines between rows, no vertical lines,
+/// and roomy cells.
+fn table_row(out: &mut String, cs: &[&str], edges_tw: &[usize], head: bool) {
+    let n = edges_tw.len();
+    out.push_str(r"\trowd\trgaph140");
     for i in 1..=n {
-        out.push_str(&format!("{CELL_EDGE}{}\\cellx{}", if head { "\\clcbpat4" } else { "" }, edges[i - 1]));
+        // Header: tinted, its edges in its own tint. Body: a thin line above and below, page-colored sides.
+        let look = if head { format!(r"{}\clcbpat4", edges(4, 4, 4, 4)) } else { edges(5, 6, 5, 6) };
+        out.push_str(&format!(r"{look}\cellx{}", edges_tw[i - 1]));
     }
     for i in 0..n {
-        out.push_str("\\pard\\intbl ");
-        if head { out.push_str("\\b "); }
+        out.push_str(r"\pard\intbl\sb70\sa70 ");
+        if head { out.push_str(r"\b\cf2 "); }
         inline(out, cs.get(i).copied().unwrap_or(""));
-        if head { out.push_str("\\b0 "); }
-        out.push_str("\\cell ");
+        if head { out.push_str(r"\b0\cf1 "); }
+        out.push_str(r"\cell ");
     }
-    out.push_str("\\row\\pard ");
+    out.push_str(r"\row\pard ");
 }
 
 /// True when the first letter is from a right-to-left script (Arabic, Hebrew, Persian, Urdu and so on).
@@ -311,7 +324,7 @@ fn markdown(out: &mut String, md: &str) {
             // Copies as tab-separated text, which pastes into spreadsheets as a real table.
             let tsv: Vec<String> = std::iter::once(t).chain(lines[first..end].iter().copied()).map(|l| cells(l).join("\t")).collect();
             let edges = column_edges(&head, &lines[first..end], n);
-            card_bar(out, "Table", tsv.join("\r\n"), *edges.last().unwrap_or(&CARD_W()));
+            card_bar(out, "Table", tsv.join("\r\n"), *edges.last().unwrap_or(&CARD_W()), false);
             table_row(out, &head, &edges, true);
             for l in &lines[first..end] { table_row(out, &cells(l), &edges, false); }
             out.push_str(CARD_GAP);
