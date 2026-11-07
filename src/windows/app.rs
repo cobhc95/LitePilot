@@ -1152,7 +1152,7 @@ pub fn hide() {
         ShowWindow(a.hwnd, SW_HIDE);
         if !a.prev.is_null() { SetForegroundWindow(a.prev); }
         set_text(a.view, "");
-        images::clear();
+        images::settle();
         code::clear();
         if !a.streaming {
             a.msgs = Vec::new();

@@ -34,25 +34,12 @@ const MAX_FETCH: usize = 6 * 1024 * 1024;
 #[derive(Clone, Copy)]
 pub struct Colors { pub bg: u32, pub tile: u32, pub text: u32 }
 
-/// `bytes` is only used on the way in; `spill` moves it to a file so the picture sits on the SSD, not in RAM.
-struct Img { key: u64, label: String, bytes: Vec<u8>, file: Option<std::path::PathBuf>, px: (u32, u32), thumb: HBITMAP, thumb_px: (i32, i32), failed: bool, remote: Option<String>, loading: bool }
+/// Pictures stay in memory as their compressed bytes. Old ones are shrunk once (`shrunk`), never removed.
+struct Img { key: u64, label: String, bytes: Vec<u8>, shrunk: bool, px: (u32, u32), thumb: HBITMAP, thumb_px: (i32, i32), failed: bool, remote: Option<String>, loading: bool }
 
 impl Img {
-    fn have(&self) -> bool { self.file.is_some() || !self.bytes.is_empty() }
-    /// Writes the compressed picture to a temp file and frees it from memory (kept in memory if the write fails).
-    fn spill(&mut self) {
-        if self.bytes.is_empty() { return; }
-        let dir = std::env::temp_dir().join(format!("LitePilot-pics-{}", std::process::id()));
-        let path = dir.join(format!("{:016x}", self.key));
-        if std::fs::create_dir_all(&dir).is_ok() && std::fs::write(&path, &self.bytes).is_ok() {
-            self.bytes = Vec::new();
-            self.file = Some(path);
-        }
-    }
-    /// The compressed picture, read back from disk when needed.
-    fn read(&self) -> Vec<u8> {
-        match &self.file { Some(p) => std::fs::read(p).unwrap_or_default(), None => self.bytes.clone() }
-    }
+    fn have(&self) -> bool { !self.bytes.is_empty() }
+    fn read(&self) -> Vec<u8> { self.bytes.clone() }
 }
 
 struct Gallery { key: u64, imgs: Vec<usize>, offset: usize, tiles: Vec<(usize, RECT)>, prev: Option<RECT>, next: Option<RECT> }
@@ -220,8 +207,7 @@ fn register(label: &str, url: &str) -> Option<usize> {
             let px = image_size(&bytes).filter(|s| s.0 > 0 && s.1 > 0)?;
             (bytes, px, None)
         };
-        let mut m = Img { key, label: label.to_string(), bytes, file: None, px, thumb: std::ptr::null_mut(), thumb_px: (0, 0), failed: false, remote, loading: false };
-        m.spill();
+        let m = Img { key, label: label.to_string(), bytes, shrunk: false, px, thumb: std::ptr::null_mut(), thumb_px: (0, 0), failed: false, remote, loading: false };
         v.push(m);
         Some(v.len() - 1)
     })
@@ -285,7 +271,7 @@ pub fn loaded(id: usize, bytes: Option<Vec<u8>>) -> bool {
         let Some(m) = v.get_mut(id) else { return false };
         m.loading = false;
         match bytes.and_then(|b| image_size(&b).filter(|s| s.0 > 0 && s.1 > 0).map(|s| (b, s))) {
-            Some((b, px)) => { m.bytes = b; m.px = px; m.spill(); false }
+            Some((b, px)) => { m.bytes = b; m.px = px; false }
             None => { m.failed = true; true }
         }
     });
@@ -336,14 +322,66 @@ unsafe fn render(a: &Api, bytes: &[u8], px: (u32, u32), w: i32, h: i32, crop: bo
     out
 }
 
-/// Frees tiles, downloaded bytes, rows, and the viewer.
-pub fn clear() {
+/// Called when the popup hides. Every picture is kept; only old ones (all but the newest `KEEP_FULL`) are shrunk
+/// once to a smaller JPEG, so memory stays low without any picture disappearing.
+pub fn settle() {
     close_viewer();
-    GALLERIES.with_borrow_mut(|g| g.clear());
-    for m in IMGS.with_borrow_mut(std::mem::take) {
-        if !m.thumb.is_null() { unsafe { DeleteObject(m.thumb as _); } }
+    let n = IMGS.with_borrow(|v| v.len());
+    for i in 0..n.saturating_sub(KEEP_FULL) {
+        let todo = IMGS.with_borrow(|v| { let m = &v[i]; (!m.shrunk && m.have()).then(|| (m.bytes.clone(), m.px)) });
+        let Some((bytes, px)) = todo else { continue };
+        let small = if px.0.max(px.1) > SHRINK_TO || bytes.len() > 200 * 1024 { unsafe { shrink(&bytes, px) } } else { None };
+        IMGS.with_borrow_mut(|v| {
+            let m = &mut v[i];
+            m.shrunk = true;
+            if let Some((b, p)) = small { if b.len() < m.bytes.len() { m.bytes = b; m.px = p; } }
+        });
     }
-    let _ = std::fs::remove_dir_all(std::env::temp_dir().join(format!("LitePilot-pics-{}", std::process::id())));
+}
+
+const KEEP_FULL: usize = 24;
+const SHRINK_TO: u32 = 800;
+
+/// Re-encodes a picture as a JPEG no larger than SHRINK_TO pixels on its long side. None if anything fails.
+unsafe fn shrink(bytes: &[u8], px: (u32, u32)) -> Option<(Vec<u8>, (u32, u32))> {
+    use windows_sys::Win32::System::Memory::{GlobalLock, GlobalSize, GlobalUnlock};
+    let a = api()?;
+    let gp = LoadLibraryW(w("gdiplus.dll").as_ptr());
+    let ole = LoadLibraryW(w("ole32.dll").as_ptr());
+    if gp.is_null() || ole.is_null() { return None; }
+    let thumb_fn: unsafe extern "system" fn(P, u32, u32, *mut P, P, P) -> i32 = std::mem::transmute(GetProcAddress(gp, b"GdipGetImageThumbnail ".as_ptr())?);
+    let save: unsafe extern "system" fn(P, P, *const [u8; 16], P) -> i32 = std::mem::transmute(GetProcAddress(gp, b"GdipSaveImageToStream ".as_ptr())?);
+    let new_stream: unsafe extern "system" fn(P, i32, *mut P) -> i32 = std::mem::transmute(GetProcAddress(ole, b"CreateStreamOnHGlobal ".as_ptr())?);
+    let hglobal_of: unsafe extern "system" fn(P, *mut P) -> i32 = std::mem::transmute(GetProcAddress(ole, b"GetHGlobalFromStream ".as_ptr())?);
+    let src = (a.mem_stream)(bytes.as_ptr(), bytes.len() as u32);
+    if src.is_null() { return None; }
+    let mut img = std::ptr::null_mut();
+    let mut out = None;
+    if (a.from_stream)(src, &mut img) == 0 && !img.is_null() {
+        let long = px.0.max(px.1).max(1);
+        let scale = (SHRINK_TO as f32 / long as f32).min(1.0);
+        let (tw, th) = (((px.0 as f32 * scale) as u32).max(1), ((px.1 as f32 * scale) as u32).max(1));
+        let mut thumb = std::ptr::null_mut();
+        if thumb_fn(img, tw, th, &mut thumb, std::ptr::null_mut(), std::ptr::null_mut()) == 0 && !thumb.is_null() {
+            let mut st = std::ptr::null_mut();
+            if new_stream(std::ptr::null_mut(), 1, &mut st) == 0 && !st.is_null() {
+                // The JPEG encoder's id: {557CF401-1A04-11D3-9A73-0000F81EF32E}.
+                let clsid: [u8; 16] = [0x01, 0xF4, 0x7C, 0x55, 0x04, 0x1A, 0xD3, 0x11, 0x9A, 0x73, 0x00, 0x00, 0xF8, 0x1E, 0xF3, 0x2E];
+                let mut hg = std::ptr::null_mut();
+                if save(thumb, st, &clsid, std::ptr::null_mut()) == 0 && hglobal_of(st, &mut hg) == 0 && !hg.is_null() {
+                    let len = GlobalSize(hg);
+                    let p = GlobalLock(hg) as *const u8;
+                    if !p.is_null() && len > 0 { out = Some((std::slice::from_raw_parts(p, len).to_vec(), (tw, th))); }
+                    GlobalUnlock(hg);
+                }
+                release(st);
+            }
+            (a.dispose)(thumb);
+        }
+        (a.dispose)(img);
+    }
+    release(src);
+    out
 }
 
 #[repr(C, packed(4))]
