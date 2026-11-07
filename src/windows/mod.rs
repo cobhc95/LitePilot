@@ -22,7 +22,6 @@ mod settings;
 pub mod util;
 
 pub fn run() {
-    util::silence_beeps();
     let a: Vec<String> = std::env::args().collect();
     if a.iter().any(|x| x == "--uninstall") {
         return install::uninstall();

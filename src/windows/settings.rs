@@ -282,7 +282,7 @@ fn page_title(p: Page) -> &'static str {
 fn toggle_meta(t: Tog) -> (&'static str, &'static str, &'static str) {
     match t {
         Tog::Share => ("\u{E902}", "Share facts across models", "On: every account uses one list. Off: each account keeps its own"),
-        Tog::Copilot => ("\u{E7F4}", "Open with the Copilot key", "Uses the Copilot key if Windows allows it"),
+        Tog::Copilot => ("\u{E7F4}", "Open with the Copilot key", "Requires Win+Shift+F23 to be available"),
         Tog::Autostart => ("\u{E7E8}", "Start with Windows", "Keeps LitePilot ready after you sign in to Windows"),
         Tog::Blur => ("\u{E8A7}", "Hide when clicking outside", "Hides the popup when you click another window"),
         Tog::Taskbar => ("\u{E8FC}", "Hide from the taskbar and Alt+Tab", "Open it with the shortcut or the tray icon"),
@@ -1577,6 +1577,8 @@ fn row_at(st: &St, x: i32, y: i32) -> Option<usize> {
 unsafe extern "system" fn proc_(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     let a = app();
     match msg {
+        WM_SYSCHAR => 0,
+        WM_MENUCHAR => (1 << 16) as isize,
         WM_PAINT => {
             let mut ps: PAINTSTRUCT = std::mem::zeroed();
             let dc = BeginPaint(h, &mut ps);

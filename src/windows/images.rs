@@ -698,6 +698,8 @@ fn show_index(step: isize) {
 }
 
 unsafe extern "system" fn viewer_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    if msg == WM_SYSCHAR { return 0; }
+    if msg == WM_MENUCHAR { return (1 << 16) as isize; }
     let s = |v: i32| v * GetDpiForWindow(h).max(96) as i32 / 96;
     match msg {
         WM_PAINT => {

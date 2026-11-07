@@ -363,6 +363,8 @@ unsafe fn paint(h: HWND, dc: HDC, m: &Menu) {
 }
 
 unsafe extern "system" fn proc_(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    if msg == WM_SYSCHAR { return 0; }
+    if msg == WM_MENUCHAR { return (1 << 16) as isize; }
     match msg {
         WM_PAINT => {
             let mut ps: PAINTSTRUCT = std::mem::zeroed();

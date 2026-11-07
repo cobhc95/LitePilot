@@ -245,7 +245,7 @@ unsafe extern "system" fn key_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) ->
             _ => {}
         }
     }
-    if msg == WM_CHAR && matches!(wp, 9 | 13 | 27) { return 0; }
+    if msg == WM_SYSCHAR || (msg == WM_CHAR && wp < 32 && !matches!(wp, 1 | 3 | 22 | 24 | 26) && !(wp == 8 && is_search && GetKeyState(VK_CONTROL as i32) >= 0 && GetWindowTextLengthW(h) > 0)) { return 0; }
     CallWindowProcW(std::mem::transmute::<isize, WNDPROC>(old), h, msg, wp, lp)
 }
 

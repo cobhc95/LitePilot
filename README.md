@@ -33,6 +33,8 @@ _Version 0.1 alpha._
 
 Replies show text, tables, code, links, and embedded PNG, JPEG, and GIF images. Web images appear as links.
 
+The optional Copilot-key shortcut registers Win+Shift+F23. If Windows or another app owns it, LitePilot cannot use it. On Windows 11, check Settings > Personalization > Text input > Customize Copilot key on keyboard and try Search or Custom; choices vary, and this does not guarantee that Windows releases the shortcut.
+
 ## Build
 
 ```
