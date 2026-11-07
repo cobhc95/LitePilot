@@ -415,24 +415,36 @@ pub fn message(m: &Msg, th: &Theme) -> String {
                 .map(|n| { let p = d.join(&n); (n, p) }).collect(),
             None => Vec::new(),
         });
-        if let Some((id, h)) = (!pics.is_empty()).then(|| super::images::register_files(&pics, &m.text)).flatten() {
-            o.push_str(&format!("\\pard\\ltrpar\\sl-{h}\\slmult0\\sb120\\sa40{{\\cf6\\fs2 "));
-            if let Some(c) = char::from_u32(super::images::FIRST_CHAR + id) { esc(&mut o, &c.to_string()); }
-            o.push_str("}\\par\\pard ");
+        // The tiles sit inside the bubble, on its first line, so file and words read as one message.
+        let tiles = (!pics.is_empty()).then(|| super::images::register_files(&pics, &m.text)).flatten();
+        if tiles.is_some() {
             for (n, _) in &pics { shown = shown.replace(&crate::core::attach::token(n), ""); }
             shown = shown.trim().to_string();
         }
-        if shown.is_empty() { o.push('}'); return o; }
+        if shown.is_empty() && tiles.is_none() { o.push('}'); return o; }
         let m = &Msg::new("user", &shown);
         let dir = if rtl(&m.text) { "\\rtlpar\\qr" } else { "\\ltrpar" };
-        let wide = (text_twips(&th.font, th.size, &m.text) + 2 * BUBBLE_PAD + 90).clamp(700, CARD_W() * 4 / 5);
+        let text_w = if shown.is_empty() { 0 } else { text_twips(&th.font, th.size, &m.text) };
+        // Each tile is 84 px wide with a 6 px gap (images.rs), 15 twips to the pixel.
+        let tiles_w = if tiles.is_some() { pics.len() * 90 * 15 } else { 0 };
+        let wide = (text_w.max(tiles_w) + 2 * BUBBLE_PAD + 90).clamp(700, CARD_W() * 4 / 5);
         // A border in the bubble's own color; without one RichEdit draws a light guide line around the cell.
-        o.push_str(&format!("{{\\pard\\sa40\\fs8\\par}}\\pard\\trowd\\trqr\\trgaph{BUBBLE_PAD}{CELL_EDGE}\\clcbpat5\\cellx{wide}\\pard\\intbl{dir}\\sb110\\sa110 \\u8203?"));
+        o.push_str(&format!("{{\\pard\\sa40\\fs8\\par}}\\pard\\trowd\\trqr\\trgaph{BUBBLE_PAD}{CELL_EDGE}\\clcbpat5\\cellx{wide}"));
+        if let Some((id, h)) = tiles {
+            let after = if shown.is_empty() { "\\sa110" } else { "\\sa60" };
+            o.push_str(&format!("\\pard\\intbl{dir}\\sl-{h}\\slmult0\\sb110{after} \\u8203?{{\\cf6\\fs2 "));
+            if let Some(c) = char::from_u32(super::images::FIRST_CHAR + id) { esc(&mut o, &c.to_string()); }
+            o.push('}');
+            if shown.is_empty() { o.push_str("\\u8203?"); } else { o.push_str("\\par\\pard\\intbl"); o.push_str(&format!("{dir}\\sb0\\sa110 ")); }
+        } else {
+            o.push_str(&format!("\\pard\\intbl{dir}\\sb110\\sa110 \\u8203?"));
+        }
         for (i, l) in m.text.lines().enumerate() {
             if i > 0 { o.push_str("\\line "); }
             esc(&mut o, l);
         }
-        o.push_str("\\u8203?\\cell\\row{\\pard\\sa40\\fs8\\par}\\pard ");
+        if !shown.is_empty() { o.push_str("\\u8203?"); }
+        o.push_str("\\cell\\row{\\pard\\sa40\\fs8\\par}\\pard ");
     } else if m.role == "note" {
         note(&mut o, &m.text);
     } else if m.role == "error" {
