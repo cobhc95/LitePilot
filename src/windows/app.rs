@@ -1801,24 +1801,6 @@ unsafe extern "system" fn child_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
 }
 
 
-/// Accent outline around the chat while it has keyboard focus.
-unsafe fn focus_ring(h: HWND) {
-    if GetFocus() != h { return; }
-    let a = app();
-    let mut rc: RECT = std::mem::zeroed();
-    GetClientRect(h, &mut rc);
-    let dpi = GetDpiForWindow(h).max(96) as i32;
-    let wd = (2 * dpi / 96).max(2);
-    let hdc = GetDC(h);
-    let pen = CreatePen(PS_SOLID, wd, a.theme.accent);
-    let (op, ob) = (SelectObject(hdc, pen as _), SelectObject(hdc, GetStockObject(NULL_BRUSH)));
-    let i = wd / 2;
-    RoundRect(hdc, rc.left + i, rc.top + i, rc.right - i, rc.bottom - i, 14 * dpi / 96, 14 * dpi / 96);
-    SelectObject(hdc, ob);
-    SelectObject(hdc, op);
-    DeleteObject(pen as _);
-    ReleaseDC(h, hdc);
-}
 
 unsafe fn paint_prompt(h: HWND) {
     if text_len(h) != 0 { return; }
@@ -1983,6 +1965,9 @@ fn tray_menu(hwnd: HWND) {
         AppendMenuW(m, MF_STRING, CMD_OPEN, w("Open").as_ptr());
         AppendMenuW(m, MF_STRING, CMD_SETTINGS, w("Settings").as_ptr());
         AppendMenuW(m, MF_STRING, CMD_QUIT, w("Quit").as_ptr());
+        AppendMenuW(m, MF_SEPARATOR, 0, std::ptr::null());
+        // The version, greyed out: for reference when reporting a problem.
+        AppendMenuW(m, MF_STRING | MF_GRAYED, 0, w(&format!("LitePilot {}", crate::core::VERSION)).as_ptr());
         let mut pt = POINT { x: 0, y: 0 };
         GetCursorPos(&mut pt);
         SetForegroundWindow(hwnd);
@@ -2032,7 +2017,10 @@ unsafe extern "system" fn wndproc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                     CARET_HIDDEN.set(!CARET_HIDDEN.get());
                 }
             }
-            if wp == ID_UPDATE && !app().streaming { super::updater::apply_if_ready(app().visible); }
+            if wp == ID_UPDATE && !app().streaming {
+                let a = app();
+                if super::updater::on_tick(a.visible, &mut a.cfg) { save_config(); }
+            }
             if wp == key_badges::TIMER { key_badges::show(); }
             if wp == ID_COPIED {
                 KillTimer(h, ID_COPIED);

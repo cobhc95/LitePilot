@@ -2,14 +2,14 @@
 
 A tiny Windows popup for AI chat. Press a shortcut, ask, press Esc.
 
-_Version 0.1.2._
+_Version 0.1.3._
 
 <p>
   <img src="screenshots/chat.png" alt="The LitePilot chat popup" width="380">
   <img src="screenshots/settings.png" alt="LitePilot settings" width="380">
 </p>
 
-- **Setup:** run `LitePilot-<version>-Setup.exe` (per-user, no admin rights). Installed copies update themselves: LitePilot checks GitHub for newer releases, downloads the portable ZIP, verifies its SHA-256 and restarts into it once no reply is streaming. Uninstall keeps settings and chats unless you choose otherwise.
+- **Setup:** run `LitePilot-<version>-Setup.exe` (per-user, no admin rights). LitePilot checks for a newer release once a day. When one is available it asks: Update now (downloads, verifies and restarts once no reply is being written), Later, or Never show again. Settings > Startup has a switch to turn checks off.
 - **Portable:** unzip `LitePilot-<version>-Portable.zip` and run `LitePilot.exe`. Settings and chats stay beside it; API keys stay in Windows Credential Manager on that PC. Portable copies update from the same release feed.
 - **API key:** Settings > pick a preset > Add profile > enter model and key > Save.
 - **Claude or ChatGPT login:** Settings > pick the profile > Sign in. The official CLI downloads on first sign-in, after you confirm.

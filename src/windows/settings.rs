@@ -41,7 +41,7 @@ enum Page { Home, Login(&'static str), Api, Startup, Appearance, Keys, Memory, C
 enum Icon { G(&'static str), Chatgpt, Claude }
 
 #[derive(Clone, Copy, PartialEq)]
-enum Tog { Share, Copilot, CopilotHook, Autostart, Blur, Taskbar, Web, Wrap, Mic, OnTop, Trim, Close, Warm, TidyOn, TidyAuto }
+enum Tog { Share, Copilot, CopilotHook, Autostart, Blur, Taskbar, Web, Wrap, Mic, OnTop, Trim, Close, Warm, TidyOn, TidyAuto, Updates }
 #[derive(Clone, Copy, PartialEq)]
 enum Pick { Theme, Palette, Font, Size, Spacing, Provider, TrimAfter, CloseAfter, MemLimit, TidyModel, MemMode }
 #[derive(Clone, Copy, PartialEq)]
@@ -294,6 +294,7 @@ fn toggle_meta(t: Tog) -> (&'static str, &'static str, &'static str) {
         Tog::Wrap => ("\u{E8A5}", "Wrap wide tables to fit", "Off: wide tables keep their width and the chat scrolls sideways"),
         Tog::Mic => ("\u{E720}", "Allow dictation", "Mic button and shortcut, using Windows voice typing"),
         Tog::OnTop => ("\u{E718}", "Keep on top of other windows", "Stays above other windows"),
+        Tog::Updates => ("\u{E896}", "Check for new versions once a day", "Asks before installing. Off: LitePilot never checks"),
         Tog::Trim => ("\u{E9D9}", "Compress its memory when idle", ""),
         Tog::Close => ("\u{E7E8}", "Close it after being idle", ""),
         Tog::Warm => ("\u{E945}", "Get it ready when the window opens", ""),
@@ -313,6 +314,7 @@ fn toggle_on(t: Tog) -> bool {
         Tog::Taskbar => c.hide_from_taskbar,
         Tog::Web => c.web_search,
         Tog::Wrap => c.wrap_tables,
+        Tog::Updates => c.check_updates,
         Tog::Mic => c.dictation,
         Tog::OnTop => c.on_top,
         Tog::Trim => c.trim_idle,
@@ -448,7 +450,7 @@ fn rows_for(page: Page, st: &St, query: &str) -> Vec<Row> {
         }
         Page::Startup => {
             let mut v = vec![row(g("\u{E765}"), "Open shortcut", "", Kind::Field(Field::Hotkey)), hint("Press Enter, then the keys you want. Esc cancels.")];
-            for t in [Tog::Copilot, Tog::CopilotHook, Tog::Autostart, Tog::Blur, Tog::Taskbar, Tog::Web, Tog::Wrap, Tog::Mic, Tog::OnTop] {
+            for t in [Tog::Copilot, Tog::CopilotHook, Tog::Autostart, Tog::Blur, Tog::Taskbar, Tog::Web, Tog::Wrap, Tog::Mic, Tog::OnTop, Tog::Updates] {
                 let m = toggle_meta(t);
                 // The dictation row shows whatever key it is bound to, never a fixed one.
                 let sub = if t == Tog::Mic { let k = keys::resolve(&c.keys).into_iter().find(|x| x.0 == "dictate").map_or("not set".to_string(), |x| keys::format(&x.1)); format!("Mic button and the {k} shortcut. Change it under Keyboard shortcuts") } else { m.2.to_string() };
@@ -724,6 +726,7 @@ fn set_toggle(h: HWND, st: &mut St, t: Tog, on: bool) {
         Tog::Taskbar => { a.cfg.hide_from_taskbar = on; app::save_config(); app::apply_taskbar(); st.status = "Saved.".into(); }
         Tog::Web => { a.cfg.web_search = on; app::save_config(); st.status = "Saved.".into(); }
         Tog::Wrap => { a.cfg.wrap_tables = on; app::save_config(); app::rerender(); st.status = "Saved.".into(); }
+        Tog::Updates => { a.cfg.check_updates = on; app::save_config(); st.status = "Saved.".into(); }
         Tog::Mic => { a.cfg.dictation = on; app::save_config(); app::relayout(); st.status = "Saved.".into(); }
         Tog::OnTop => { app::run_action("on_top"); st.status = "Saved.".into(); }
         Tog::Trim => { a.cfg.trim_idle = on; app::save_config(); st.status = "Saved.".into(); }
