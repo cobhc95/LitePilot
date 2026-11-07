@@ -854,6 +854,9 @@ fn place_children() {
         let mut rc: RECT = std::mem::zeroed();
         GetClientRect(a.hwnd, &mut rc);
         let (ww, wh) = (rc.right, rc.bottom);
+        // The buttons are moved with drawing paused and then painted once, so none flashes its plain background.
+        let movers = [a.header, a.send_btn, a.btn, a.mic_btn, a.input];
+        for c in movers { SendMessageW(c, WM_SETREDRAW, 0, 0); }
         let dpi = GetDpiForWindow(a.hwnd).max(96) as i32;
         let s = |v: i32| v * dpi / 96;
         // Layout B: the chat fills the window; every control shares one row in the input pill.
@@ -884,7 +887,9 @@ fn place_children() {
         actions_view::relayout();
         update_header(); // sizes the model chip, then places the input after it
         thumbs::place();
+        for c in movers { SendMessageW(c, WM_SETREDRAW, 1, 0); }
         InvalidateRect(a.hwnd, std::ptr::null(), 1);
+        for c in movers { RedrawWindow(c, std::ptr::null(), std::ptr::null_mut(), RDW_INVALIDATE | RDW_NOERASE | RDW_UPDATENOW); }
     }
 }
 
@@ -1935,7 +1940,17 @@ unsafe extern "system" fn child_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
     let edits = is_input && matches!(msg, WM_CHAR | WM_KEYDOWN | WM_KEYUP | WM_PASTE | WM_CUT | WM_UNDO | WM_SETTEXT | WM_IME_COMPOSITION);
     let was_empty = edits && text_len(h) == 0;
     let r = CallWindowProcW(std::mem::transmute::<isize, WNDPROC>(old), h, msg, wp, lp);
-    if edits && was_empty != (text_len(h) == 0) { InvalidateRect(h, std::ptr::null(), 1); }
+    if edits && was_empty != (text_len(h) == 0) {
+        // The "Ask anything" prompt is drawn straight onto the box, so its descenders (y, g) can outlive the
+        // first typed letter. Wipe the whole box before it repaints.
+        let dc = GetDC(h);
+        let mut rc: RECT = std::mem::zeroed();
+        GetClientRect(h, &mut rc);
+        FillRect(dc, &rc, a.field_brush);
+        ReleaseDC(h, dc);
+        InvalidateRect(h, std::ptr::null(), 0);
+        UpdateWindow(h);
+    }
     // The text direction follows what is typed: from the right for Arabic and similar, otherwise from the left.
     if edits { auto_direction(h); }
     if edits {
