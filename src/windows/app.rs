@@ -917,9 +917,17 @@ fn scroll_bottom(view: HWND) {
     unsafe { SendMessageW(view, WM_VSCROLL, SB_BOTTOM as usize, 0); }
 }
 
+/// The furthest the chat may scroll: the end of the last reply sits at the bottom edge, never above it, so the
+/// chat can't be scrolled into empty space. (RichEdit itself lets the last line travel up to the top.)
+unsafe fn max_scroll(view: HWND) -> i32 {
+    let (pos, _, page) = scroll_range(view);
+    let end_y = bubbles::char_pos(view, text_len(view)).y;
+    (pos + end_y - page + line_px(view) / 3).max(0)
+}
+
 /// Sets the chat's pixel scroll position directly (no repaint; callers paint once).
 unsafe fn set_pos(view: HWND, y: i32) {
-    let mut pt = POINT { x: 0, y: y.max(0) };
+    let mut pt = POINT { x: 0, y: y.clamp(0, max_scroll(view)) };
     SendMessageW(view, 0x0400 + 222, 0, &mut pt as *mut POINT as isize); // EM_SETSCROLLPOS
 }
 
@@ -1620,7 +1628,7 @@ unsafe fn line_px(h: HWND) -> i32 {
 /// Moves the chat to `y` pixels from the top (clamped) at once and repaints the whole view.
 unsafe fn scroll_to(h: HWND, y: i32) {
     let (pos, _, _) = scroll_range(h);
-    let y = y.max(0); // RichEdit holds it at the end of the text itself
+    let y = y.clamp(0, max_scroll(h));
     app().pin_user = false; // the reader took over the scrolling
     if y == pos { return; }
     let mut pt = POINT { x: 0, y };
@@ -1766,6 +1774,8 @@ unsafe extern "system" fn child_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                     _ => {
                         if matches!((wp & 0xFFFF) as i32, SB_THUMBTRACK | SB_TOP) { a.pin_user = false; }
                         let r = CallWindowProcW(std::mem::transmute::<isize, WNDPROC>(a.old_view), h, msg, wp, lp);
+                        let (pos, _, _) = scroll_range(h);
+                        if pos > max_scroll(h) { set_pos(h, pos); } // dragged or jumped past the last reply: pull back
                         RedrawWindow(h, std::ptr::null(), std::ptr::null_mut(), RDW_INVALIDATE | RDW_UPDATENOW);
                         return r;
                     }
