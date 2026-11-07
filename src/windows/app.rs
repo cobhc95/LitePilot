@@ -888,6 +888,8 @@ fn place_children() {
         update_header(); // sizes the model chip, then places the input after it
         thumbs::place();
         for c in movers { SendMessageW(c, WM_SETREDRAW, 1, 0); }
+        // WM_SETREDRAW(TRUE) makes a window visible again, so a mic that is switched off must be hidden after it.
+        if !mic { ShowWindow(a.mic_btn, SW_HIDE); }
         InvalidateRect(a.hwnd, std::ptr::null(), 1);
         for c in movers { RedrawWindow(c, std::ptr::null(), std::ptr::null_mut(), RDW_INVALIDATE | RDW_NOERASE | RDW_UPDATENOW); }
     }

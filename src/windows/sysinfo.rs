@@ -1,6 +1,7 @@
-//! A read-only "look at this computer" tool server for the assistant (LitePilot.exe --system-mcp). It is not a
-//! shell: there are four fixed operations, and the only things the assistant chooses are a process-name filter
-//! and a folder or file to look at. Nothing here can change the computer. File reading skips anything that looks
+//! A read-only "look at this computer" tool server for the assistant (LitePilot.exe --system-mcp). Four fixed
+//! operations, plus `run_powershell`, which takes the assistant's own script but only runs it after guard.ps1
+//! has checked every command against a read-only allowlist (and then runs it in constrained language).
+//! Nothing here can change the computer. File reading skips anything that looks
 //! like a secret (keys, tokens, passwords, browser profiles, LitePilot's own data).
 use serde_json::{json, Value};
 use std::io::Read;
@@ -19,7 +20,9 @@ fn tools() -> Value {
         {"name": "list_folder", "description": "Read-only. Lists the files and folders inside an absolute folder path, with sizes and modified dates (first 200).",
          "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": r"Absolute path, e.g. C:\Users\me\Downloads"}}, "required": ["path"]}},
         {"name": "read_text_file", "description": "Read-only. The first 64 KB of a text file (logs, notes, config). Refuses binary files and anything that looks like a secret.",
-         "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "Absolute path of the file"}}, "required": ["path"]}}
+         "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "Absolute path of the file"}}, "required": ["path"]}},
+        {"name": "run_powershell", "description": "Strictly read-only PowerShell for diagnostics, checked against an allowlist before it runs. Allowed: Get-* queries (Get-Process, Get-Service, Get-CimInstance, Get-WinEvent, Get-PhysicalDisk, Get-Volume, Get-NetAdapter, Get-NetTCPConnection, Get-ScheduledTask, Get-PnpDevice, Get-ChildItem, registry reads...), Where/Select/Sort/Group/Measure/Format-*/ConvertTo-Json, variables, loops, and fixed read-only tools (ipconfig /all, netstat -ano, tasklist /v, systeminfo, reg query, sc query, wevtutil qe, netsh ... show). Blocked, with a reason: anything that changes the PC or writes, reads file contents, touches secrets or env vars, uses the network or other computers, or runs other programs. Use read_text_file for file text. Stops after 20 s.",
+         "inputSchema": {"type": "object", "properties": {"script": {"type": "string", "description": "The PowerShell to run (up to 6000 characters)"}, "timeout_seconds": {"type": "integer", "description": "1 to 60, default 20"}}, "required": ["script"]}}
     ])
 }
 
@@ -47,6 +50,37 @@ fn powershell(script: &str, name: &str) -> String {
         Ok(o) => String::from_utf8_lossy(&o.stdout).trim().to_string(),
         Err(e) => format!("Couldn't run: {e}"),
     }
+}
+
+/// The checker that sits in front of every script (see guard.ps1): an allowlist plus PowerShell's constrained language.
+const GUARD: &str = include_str!("guard.ps1");
+
+/// Runs the assistant's script through the guard, killing it (and anything it started) when time runs out.
+fn run_guarded(script: &str, secs: u64) -> String {
+    use std::process::Stdio;
+    let mut c = super::util::hidden("powershell.exe");
+    c.args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", &b64_utf16("Invoke-Expression $env:LP_GUARD")])
+        .env("LP_GUARD", GUARD).env("LP_SCRIPT", script).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
+    let Ok(mut child) = c.spawn() else { return "Couldn't start PowerShell.".into() };
+    let mut pipe = child.stdout.take();
+    let reader = std::thread::spawn(move || { let mut b = Vec::new(); if let Some(p) = pipe.as_mut() { let _ = p.take(256 * 1024).read_to_end(&mut b); } b });
+    let start = std::time::Instant::now();
+    let mut timed_out = false;
+    loop {
+        match child.try_wait() {
+            Ok(None) if start.elapsed().as_secs() >= secs => {
+                timed_out = true;
+                let _ = super::util::hidden("taskkill.exe").args(["/PID", &child.id().to_string(), "/T", "/F"]).output();
+                let _ = child.kill();
+                break;
+            }
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(40)),
+            _ => break,
+        }
+    }
+    let _ = child.wait();
+    let out = String::from_utf8_lossy(&reader.join().unwrap_or_default()).trim().to_string();
+    if timed_out { format!("{out}\n(stopped after {secs} s)").trim().to_string() } else if out.is_empty() { "(no output)".into() } else { out }
 }
 
 const OVERVIEW: &str = r#"$o=Get-CimInstance Win32_OperatingSystem; $c=Get-CimInstance Win32_Processor|Select-Object -First 1
@@ -108,6 +142,12 @@ fn call(name: &str, args: &Value) -> Result<Value, String> {
             if buf.contains(&0) { return Err("That looks like a binary file, not text.".into()); }
             Ok(text(String::from_utf8_lossy(&buf).to_string()))
         }
+        "run_powershell" => {
+            let script = args["script"].as_str().unwrap_or("").trim();
+            if script.is_empty() { return Err("Give a script to run.".into()); }
+            if script.len() > 6000 { return Err("That script is too long (6000 characters at most).".into()); }
+            Ok(text(run_guarded(script, args["timeout_seconds"].as_u64().unwrap_or(20).clamp(1, 60))))
+        }
         _ => Err(format!("unknown tool {name}")),
     }
 }
@@ -157,6 +197,15 @@ mod tests {
         assert!(handle(r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#).unwrap().contains("processes"));
         let r = handle(r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"processes","arguments":{"name":"a; rm"}}}"#).unwrap();
         assert!(r.contains("isError"));
+    }
+    #[test]
+    fn guard_allows_reads_and_blocks_writes() {
+        assert!(run_guarded("(Get-CimInstance Win32_OperatingSystem).Caption", 30).contains("Windows"));
+        for bad in ["Remove-Item C:\\x", "Get-Process | ForEach-Object { $_.Kill() }", "Get-Content C:\\Windows\\win.ini", "Get-ChildItem Env:", "iex 'ls'", "ls > C:\\lp_guard_test.txt", "ping 127.0.0.1", "[System.IO.File]::ReadAllText('C:\\Windows\\win.ini')"] {
+            assert!(run_guarded(bad, 30).starts_with("BLOCKED"), "should be blocked: {bad}");
+        }
+        assert!(!std::path::Path::new("C:\\lp_guard_test.txt").exists());
+        assert!(run_guarded("Start-Sleep 1", 30).starts_with("BLOCKED"));
     }
     #[test]
     fn base64_matches() { assert_eq!(b64_utf16("a"), "YQA="); }
