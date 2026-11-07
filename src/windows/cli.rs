@@ -56,8 +56,68 @@ pub fn default_path(kind: &str) -> PathBuf {
 pub fn find(kind: &str) -> Option<PathBuf> {
     let d = default_path(kind);
     if d.exists() { return Some(d); }
+    if kind == "codex" {
+        let local = litepilot_codex_dir().join(r"bin\codex.exe");
+        if local.is_file() { return Some(local); }
+    }
     let name = if kind == "claude" { "claude.exe" } else { "codex.exe" };
     std::env::split_paths(&std::env::var_os("PATH")?).map(|p| p.join(name)).find(|p| p.exists())
+}
+
+fn litepilot_codex_dir() -> PathBuf {
+    env_path("LOCALAPPDATA", r"LitePilot\Codex")
+}
+
+/// Install OpenAI's published package without its junction-based installer. Existing Codex files and sign-in stay untouched.
+fn install_codex() -> Result<PathBuf, String> {
+    install_codex_to(&litepilot_codex_dir())
+}
+
+fn install_codex_to(root: &std::path::Path) -> Result<PathBuf, String> {
+    use sha2::{Digest, Sha256};
+    use std::path::Component;
+    let exe = root.join(r"bin\codex.exe");
+    if exe.is_file() { return Ok(exe); }
+    if root.exists() { return Err(format!("LitePilot's Codex folder already exists but is incomplete: {}. It was not changed.", root.display())); }
+    let target = if cfg!(target_arch = "aarch64") { "aarch64" } else { "x86_64" };
+    let asset = format!("codex-package-{target}-pc-windows-msvc.tar.gz");
+    let metadata = super::http::fetch("https://releases.openai.com/codex/channels/latest", 4 * 1024 * 1024)
+        .ok_or("Could not download OpenAI's Codex release information.")?;
+    let metadata: serde_json::Value = serde_json::from_slice(&metadata).map_err(|e| format!("Invalid Codex release information: {e}"))?;
+    let item = metadata["assets"].as_array().and_then(|a| a.iter().find(|x| x["name"].as_str() == Some(&asset)))
+        .ok_or("OpenAI's Codex package for this PC was not found.")?;
+    let url = item["browser_download_url"].as_str().filter(|u| u.starts_with("https://releases.openai.com/codex/releases/") && u.ends_with(&asset))
+        .ok_or("Invalid Codex package URL.")?;
+    let expected = item["digest"].as_str().and_then(|s| s.strip_prefix("sha256:"))
+        .filter(|s| s.len() == 64 && s.bytes().all(|c| c.is_ascii_hexdigit())).ok_or("Missing Codex package checksum.")?;
+    let bytes = super::http::fetch(url, 384 * 1024 * 1024).ok_or("Could not download the Codex package.")?;
+    let actual = format!("{:x}", Sha256::digest(&bytes));
+    if !actual.eq_ignore_ascii_case(expected) { return Err("The Codex package checksum did not match. Nothing was installed.".into()); }
+    let parent = root.parent().ok_or("Invalid Codex install folder.")?;
+    std::fs::create_dir_all(parent).map_err(|e| format!("Could not create the Codex install folder: {e}"))?;
+    let stage = parent.join(format!("Codex-install-{}", std::process::id()));
+    std::fs::create_dir(&stage).map_err(|e| format!("Could not create temporary Codex folder {}: {e}", stage.display()))?;
+    let result = (|| -> Result<(), String> {
+        let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(bytes.as_slice()));
+        let entries = archive.entries().map_err(|e| format!("Invalid Codex archive: {e}"))?;
+        for entry in entries {
+            let mut entry = entry.map_err(|e| format!("Invalid Codex archive entry: {e}"))?;
+            let path = entry.path().map_err(|e| format!("Invalid Codex archive path: {e}"))?.into_owned();
+            if path.components().any(|c| !matches!(c, Component::Normal(_) | Component::CurDir)) { return Err("Unsafe path in Codex archive.".into()); }
+            let ty = entry.header().entry_type();
+            if !(ty.is_file() || ty.is_dir()) { return Err("Unexpected link or special file in Codex archive.".into()); }
+            if !entry.unpack_in(&stage).map_err(|e| format!("Could not unpack Codex: {e}"))? { return Err("Unsafe path in Codex archive.".into()); }
+        }
+        let staged_exe = stage.join(r"bin\codex.exe");
+        if !staged_exe.is_file() || !stage.join("codex-package.json").is_file() { return Err("The downloaded Codex package is incomplete.".into()); }
+        let status = hidden(staged_exe.to_str().ok_or("Invalid Codex executable path.")?).arg("--version").status()
+            .map_err(|e| format!("Could not start the downloaded Codex: {e}"))?;
+        if !status.success() { return Err("The downloaded Codex did not pass its startup check.".into()); }
+        std::fs::rename(&stage, root).map_err(|e| format!("Could not finish installing Codex: {e}"))?;
+        Ok(())
+    })();
+    if result.is_err() { let _ = std::fs::remove_dir_all(&stage); }
+    result.map(|_| exe)
 }
 
 /// ChatGPT models the installed Codex knows about, from its own cache. Empty if there's none yet.
@@ -71,7 +131,7 @@ pub fn codex_models() -> Vec<String> {
 }
 
 pub fn install_url(kind: &str) -> &'static str {
-    if kind == "claude" { "https://claude.ai/install.ps1" } else { "https://chatgpt.com/codex/install.ps1" }
+    if kind == "claude" { "https://claude.ai/install.ps1" } else { "https://releases.openai.com/codex/channels/latest" }
 }
 
 pub fn is_signed_in(kind: &str) -> bool {
@@ -90,12 +150,17 @@ pub fn is_signed_in(kind: &str) -> bool {
 /// Runs the official installer if needed, then its login, in a visible console. Blocks until closed.
 pub fn sign_in(kind: &str) {
     use std::os::windows::process::CommandExt;
-    let exe = find(kind).unwrap_or_else(|| default_path(kind));
+    let exe = if kind == "codex" {
+        match find(kind).map(Ok).unwrap_or_else(install_codex) {
+            Ok(p) => p,
+            Err(e) => { unsafe { windows_sys::Win32::UI::WindowsAndMessaging::MessageBoxW(std::ptr::null_mut(), super::util::w(&e).as_ptr(), super::util::w("Codex installation failed").as_ptr(), windows_sys::Win32::UI::WindowsAndMessaging::MB_OK | windows_sys::Win32::UI::WindowsAndMessaging::MB_ICONERROR); } return; }
+        }
+    } else { find(kind).unwrap_or_else(|| default_path(kind)) };
     let login = if kind == "claude" { "auth login" } else { "login" };
     // The official installer script is fetched here and saved to a temp file; PowerShell then runs it in a
     // visible console. No execution-policy override is needed: it is run as text, not as a script file.
     let script_file = std::env::temp_dir().join(format!("litepilot-install-{kind}.ps1"));
-    let fetched = super::http::fetch(install_url(kind), 2 * 1024 * 1024).is_some_and(|b| std::fs::write(&script_file, b).is_ok());
+    let fetched = kind != "codex" && super::http::fetch(install_url(kind), 2 * 1024 * 1024).is_some_and(|b| std::fs::write(&script_file, b).is_ok());
     let install = if fetched { "Invoke-Expression ([IO.File]::ReadAllText($env:LP_SCRIPT))" } else { "Write-Host 'Could not download the installer. Check your connection.' -ForegroundColor Red; throw 'download failed'" };
     let script = format!(
         "$ErrorActionPreference='Stop'; try {{ if (-not (Test-Path $env:LP_EXE)) {{ {install} }}; & $env:LP_EXE {login} }} catch {{ Write-Host $_ -ForegroundColor Red; pause }}"
@@ -106,7 +171,7 @@ pub fn sign_in(kind: &str) {
         .env("LP_SCRIPT", &script_file)
         .creation_flags(0x10) // CREATE_NEW_CONSOLE
         .status();
-    let _ = std::fs::remove_file(&script_file);
+    if fetched { let _ = std::fs::remove_file(&script_file); }
 }
 
 pub fn sign_out(kind: &str) {
@@ -118,3 +183,16 @@ pub fn sign_out(kind: &str) {
 }
 
 pub use super::resident::{set_memory_tool, claude_memory_dir, configure, reset, run, stop, warm};
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    #[ignore = "downloads the current OpenAI Codex package"]
+    fn installs_official_codex_without_junctions() {
+        let root = std::env::temp_dir().join(format!("litepilot-codex-test-{}", std::process::id()));
+        let exe = super::install_codex_to(&root).unwrap();
+        assert!(exe.is_file());
+        assert!(super::install_codex_to(&root).is_ok());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}

@@ -77,6 +77,24 @@ pub fn set_autostart(on: bool) {
     else { super::install::reg_delete_value(RUN_KEY, "LitePilot"); }
 }
 
+/// Silence Windows control beeps inside this process only.
+pub fn silence_beeps() {
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        use windows_sys::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
+        use windows_sys::Win32::System::Memory::{VirtualProtect, PAGE_EXECUTE_READWRITE};
+        let m = LoadLibraryW(w("user32.dll").as_ptr());
+        if m.is_null() { return; }
+        let Some(f) = GetProcAddress(m, b"MessageBeep\0".as_ptr()) else { return };
+        let p = f as *mut u8;
+        let mut old = 0;
+        if VirtualProtect(p as _, 6, PAGE_EXECUTE_READWRITE, &mut old) == 0 { return; }
+        // mov eax, 1 ; ret
+        std::ptr::copy_nonoverlapping([0xB8u8, 1, 0, 0, 0, 0xC3].as_ptr(), p, 6);
+        VirtualProtect(p as _, 6, old, &mut old);
+    }
+}
+
 /// Rounded corners for a pop-up window. Windows 11 draws them smoothly itself; older Windows falls back to a
 /// (hard-edged) window region.
 pub fn round_popup(h: HWND, w: i32, hh: i32, radius: i32) {

@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs" xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
   <Package Name="LitePilot" Manufacturer="LitePilot" Version="0.1.0"
-           ProductCode="28E17362-AD30-4614-93BF-A753BB15497E"
+           ProductCode="6C5A680F-88C8-4A77-8601-D7AEF3DDC202"
            UpgradeCode="F34558FC-9FA7-4D59-BD92-4BD4D01245CC" Scope="perUser">
     <MajorUpgrade AllowSameVersionUpgrades="yes" DowngradeErrorMessage="A newer version of LitePilot is already installed." />
     <MediaTemplate EmbedCab="yes" />

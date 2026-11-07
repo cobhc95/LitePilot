@@ -939,7 +939,7 @@ fn sign_in(h: HWND, kind: &'static str, st: &mut St) {
 }
 
 fn start_signin(h: HWND, kind: &'static str, st: &mut St) {
-    st.status = "Finish signing in using the windows that open\u{2026}".into();
+    st.status = if kind == "codex" && cli::find(kind).is_none() { "Downloading Codex; sign-in opens when it is ready\u{2026}" } else { "Finish signing in using the windows that open\u{2026}" }.into();
     let hv = h as usize;
     std::thread::spawn(move || {
         cli::sign_in(kind);
