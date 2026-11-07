@@ -112,6 +112,8 @@ pub struct App {
     /// Start of the latest question in the chat text, and whether the view is still holding it at the top
     /// (cleared as soon as the user scrolls).
     user_start: i32,
+    /// End of the latest question's text: where the caret goes when Tab moves focus into the chat.
+    user_end: i32,
     pin_user: bool,
     /// What the model has been doing while the reply is empty: each step and when it started.
     steps: Vec<(String, std::time::Instant)>,
@@ -911,6 +913,14 @@ unsafe fn set_pos(view: HWND, y: i32) {
     SendMessageW(view, 0x0400 + 222, 0, &mut pt as *mut POINT as isize); // EM_SETSCROLLPOS
 }
 
+/// Focuses the chat with the caret at the end of the latest question, not at the end of the reply after it.
+unsafe fn focus_chat_at_question(view: HWND) {
+    let end = app().user_end as isize;
+    SendMessageW(view, EM_SETSEL_, end as usize, end);
+    SetFocus(view);
+    SendMessageW(view, 0xB7, 0, 0); // EM_SCROLLCARET: keep the caret on screen
+}
+
 /// Scrolls so the latest question sits at the top of the view, as far as the text allows.
 unsafe fn show_question_at_top(view: HWND) {
     let (pos, _, _) = scroll_range(view);
@@ -932,6 +942,7 @@ fn render_view(mode: Scroll) {
         SendMessageW(a.view, WM_SETREDRAW, 0, 0);
         set_text(a.view, "");
         code::clear();
+        a.user_end = 0;
         let mut note_start: Option<i32> = None;
         for (i, m) in a.msgs.iter().enumerate() {
             if a.streaming && i + 1 == a.msgs.len() {
@@ -943,6 +954,7 @@ fn render_view(mode: Scroll) {
             else if m.role == "user" { a.user_start = note_start.take().unwrap_or_else(|| text_len(a.view)); }
             else { note_start = None; }
             stream_in(a.view, text_len(a.view), &message_rtf(a, m, i + 1 == a.msgs.len()));
+            if m.role == "user" { a.user_end = text_len(a.view); }
         }
         // Scrolled while drawing is off, then painted once: no frame at the old position, no jump.
         match mode {
@@ -1556,7 +1568,9 @@ fn on_key(vk: u16) -> bool {
     }
     match vk {
         VK_ESCAPE => { if a.streaming { stop(); } else { hide(); } }
-        VK_TAB if !ctrl && !alt => unsafe { SetFocus(if GetFocus() == a.input { a.view } else { a.input }); },
+        VK_TAB if !ctrl && !alt => unsafe {
+            if GetFocus() == a.input { focus_chat_at_question(a.view); } else { SetFocus(a.input); }
+        },
         _ => return false,
     }
     true
@@ -2354,7 +2368,7 @@ pub fn run(show_now: bool) {
         APP.store(Box::into_raw(Box::new(App {
             hwnd: std::ptr::null_mut(), header: std::ptr::null_mut(), view: std::ptr::null_mut(), input: std::ptr::null_mut(), btn: std::ptr::null_mut(),
             settings: std::ptr::null_mut(), cfg, data, msgs: Vec::new(), chat, loaded: false, gen: 0, streaming: false, dirty: false,
-            stream_start: 0, user_start: 0, pin_user: false, steps: Vec::new(), cancel: None, send_btn: std::ptr::null_mut(), pin_btn: std::ptr::null_mut(), history_btn: std::ptr::null_mut(), new_btn: std::ptr::null_mut(), mic_btn: std::ptr::null_mut(), tip: std::ptr::null_mut(), hot: std::ptr::null_mut(), spin: 0, small_font: std::ptr::null_mut(), t0: None, first_tok: None, out_chars: 0, card_tw: 0, tried: Vec::new(), input_lines: 1, mem_undo: None, old_btn: 0, code_mark: 0, pill: RECT { left: 0, top: 0, right: 0, bottom: 0 },
+            stream_start: 0, user_start: 0, user_end: 0, pin_user: false, steps: Vec::new(), cancel: None, send_btn: std::ptr::null_mut(), pin_btn: std::ptr::null_mut(), history_btn: std::ptr::null_mut(), new_btn: std::ptr::null_mut(), mic_btn: std::ptr::null_mut(), tip: std::ptr::null_mut(), hot: std::ptr::null_mut(), spin: 0, small_font: std::ptr::null_mut(), t0: None, first_tok: None, out_chars: 0, card_tw: 0, tried: Vec::new(), input_lines: 1, mem_undo: None, old_btn: 0, code_mark: 0, pill: RECT { left: 0, top: 0, right: 0, bottom: 0 },
             field_brush: CreateSolidBrush(th.code), icon_font: std::ptr::null_mut(), theme: th, visible: false, prev: std::ptr::null_mut(), old_input: 0, old_view: 0,
             bg_brush, font: std::ptr::null_mut(), hotkey_warning: String::new(),
         })), Ordering::Relaxed);
