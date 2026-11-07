@@ -112,7 +112,7 @@ pub fn paste() -> bool {
                 if super::images::dib_to_png(&bytes, &dest) {
                     if std::fs::metadata(&dest).is_ok_and(|m| m.len() > attach::MAX_FILE) {
                         let _ = std::fs::remove_file(&dest);
-                        app::show_note("That picture is over 8 MB, so it wasn't attached.");
+                        app::show_note(&format!("That picture is over {} MB, so it wasn't attached.", attach::MAX_FILE / 1024 / 1024));
                     } else {
                         insert_token(&name);
                     }
@@ -142,21 +142,26 @@ pub fn dropped(h: HANDLE) {
     unsafe { paths(h) }.iter().for_each(|f| add_file(f));
 }
 
-/// The "Attach a file" action: a standard Open dialog, then the file is marked in the box.
+/// The "Attach a file" action: a standard Open dialog (several files can be chosen), then each is attached.
 pub fn pick() {
-    use windows_sys::Win32::UI::Controls::Dialogs::{GetOpenFileNameW, OPENFILENAMEW, OFN_FILEMUSTEXIST, OFN_PATHMUSTEXIST, OFN_NOCHANGEDIR};
+    use windows_sys::Win32::UI::Controls::Dialogs::{GetOpenFileNameW, OPENFILENAMEW, OFN_ALLOWMULTISELECT, OFN_EXPLORER, OFN_FILEMUSTEXIST, OFN_PATHMUSTEXIST, OFN_NOCHANGEDIR};
     let a = app();
     unsafe {
-        let mut buf = vec![0u16; 1024];
+        let mut buf = vec![0u16; 64 * 1024];
         let mut o: OPENFILENAMEW = std::mem::zeroed();
         o.lStructSize = std::mem::size_of::<OPENFILENAMEW>() as u32;
         o.hwndOwner = a.hwnd;
         o.lpstrFile = buf.as_mut_ptr();
         o.nMaxFile = buf.len() as u32;
-        o.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+        o.Flags = OFN_ALLOWMULTISELECT | OFN_EXPLORER | OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
         if GetOpenFileNameW(&mut o) != 0 {
-            let n = buf.iter().position(|c| *c == 0).unwrap_or(0);
-            add_file(Path::new(&String::from_utf16_lossy(&buf[..n])));
+            // One file: its full path. Several: the folder, then each name, each ending in a zero.
+            let parts: Vec<String> = buf.split(|c| *c == 0).take_while(|p| !p.is_empty()).map(String::from_utf16_lossy).collect();
+            match parts.as_slice() {
+                [one] => add_file(Path::new(one)),
+                [dir, names @ ..] => names.iter().for_each(|n| add_file(&Path::new(dir).join(n))),
+                [] => {}
+            }
         }
     }
 }

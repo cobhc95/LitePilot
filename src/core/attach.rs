@@ -6,9 +6,9 @@ use std::path::{Path, PathBuf};
 
 pub const OPEN: &str = "[\u{1F4CE} ";
 /// Largest single file that is sent.
-pub const MAX_FILE: u64 = 8 * 1024 * 1024;
-/// Most bytes of attachments sent in one request, newest messages first.
-pub const MAX_TOTAL: u64 = 16 * 1024 * 1024;
+pub const MAX_FILE: u64 = 50 * 1024 * 1024;
+/// No total cap of our own: the provider says what it takes, and its answer is shown if it refuses.
+pub const MAX_TOTAL: u64 = u64::MAX;
 const MAX_TEXT: u64 = 200 * 1024;
 
 pub fn token(name: &str) -> String { format!("{OPEN}{name}]") }

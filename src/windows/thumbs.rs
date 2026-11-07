@@ -14,7 +14,6 @@ use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 const TILE: i32 = 44;
 const GAP: i32 = 8;
-const BAR: i32 = 62;
 
 thread_local! {
     static ITEMS: RefCell<Vec<(String, PathBuf)>> = const { RefCell::new(Vec::new()) };
@@ -23,8 +22,23 @@ thread_local! {
 
 fn scale(v: i32) -> i32 { v * unsafe { GetDpiForWindow(app().hwnd) }.max(96) as i32 / 96 }
 
-/// Height the strip takes above the typing box (0 when there is nothing to show).
-pub fn height() -> i32 { if ITEMS.with_borrow(|v| v.is_empty()) { 0 } else { scale(BAR) } }
+/// Most rows of tiles shown; any more are still attached and counted on the last tile.
+const MAX_ROWS: usize = 3;
+
+/// Tiles per row for the pill's current width, and how many rows the attachments need.
+fn grid() -> (usize, usize) {
+    let p = super::app::pill_rect();
+    let room = p.right - p.left - scale(20) - scale(6);
+    let per = (((room + scale(GAP)) / (scale(TILE) + scale(GAP))).max(1)) as usize;
+    let n = ITEMS.with_borrow(|v| v.len());
+    (per, n.div_ceil(per).min(MAX_ROWS))
+}
+
+/// Height the strip takes inside the pill (0 when there is nothing to show).
+pub fn height() -> i32 {
+    if ITEMS.with_borrow(|v| v.is_empty()) { return 0; }
+    scale(10) + grid().1 as i32 * (scale(TILE) + scale(GAP))
+}
 
 /// Adds a file (already copied into the attachments folder) to what will be sent.
 pub fn add(name: &str) {
@@ -79,7 +93,7 @@ pub fn place() {
         }
         if empty { ShowWindow(h, SW_HIDE); return; }
         let p = super::app::pill_rect();
-        let bh = scale(BAR);
+        let bh = height();
         SetWindowPos(h, std::ptr::null_mut(), p.left + scale(10), p.top + scale(8), p.right - p.left - scale(20), bh - scale(8), SWP_NOZORDER | SWP_SHOWWINDOW | SWP_NOACTIVATE);
         InvalidateRect(h, std::ptr::null(), 1);
     }
@@ -88,9 +102,10 @@ pub fn place() {
 fn rects(n: usize) -> Vec<(RECT, RECT)> {
     let (t, g, x0, top) = (scale(TILE), scale(GAP), scale(6), scale(8));
     let d = scale(16);
-    (0..n).map(|i| {
-        let l = x0 + i as i32 * (t + g);
-        let tile = RECT { left: l, top, right: l + t, bottom: top + t };
+    let (per, rows) = grid();
+    (0..n.min(per * rows)).map(|i| {
+        let (l, tp) = (x0 + (i % per) as i32 * (t + g), top + (i / per) as i32 * (t + g));
+        let tile = RECT { left: l, top: tp, right: l + t, bottom: tp + t };
         let x = RECT { left: tile.right - d + scale(5), top: tile.top - scale(5), right: tile.right + scale(5), bottom: tile.top - scale(5) + d };
         (tile, x)
     }).collect()
@@ -108,7 +123,8 @@ unsafe fn paint(h: HWND) {
     let items = ITEMS.with_borrow(|v| v.clone());
     let mem = CreateCompatibleDC(dc);
     let t = scale(TILE);
-    for ((n, p), (tile, x)) in items.iter().zip(rects(items.len())) {
+    let shown = rects(items.len());
+    for (k, ((n, p), (tile, x))) in items.iter().zip(shown.iter().copied()).enumerate() {
         let is_pic = matches!(attach::kind(n), attach::Kind::Image(_));
         let bmp = if is_pic { super::images::file_tile(n, p, t, t, dc, a.theme.code) } else { std::ptr::null_mut() };
         if !bmp.is_null() {
@@ -127,6 +143,21 @@ unsafe fn paint(h: HWND) {
             SetTextColor(dc, a.theme.text);
             let (tx, mut r) = (w(&ext), tile);
             DrawTextW(dc, tx.as_ptr(), tx.len() as i32 - 1, &mut r, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+            SelectObject(dc, of);
+            DeleteObject(f as _);
+        }
+        if k + 1 == shown.len() && items.len() > shown.len() {
+            // More attachments than fit: the last tile says how many are hidden (× removes this one).
+            let more = w(&format!("+{}", items.len() - shown.len() + 1));
+            let sh = CreateSolidBrush(a.theme.bubble);
+            FillRect(dc, &tile, sh);
+            DeleteObject(sh as _);
+            let f = CreateFontW(-scale(14), 0, 0, 0, 700, 0, 0, 0, 1, 0, 0, 5, 0, w("Segoe UI").as_ptr());
+            let of = SelectObject(dc, f as _);
+            SetBkMode(dc, 1);
+            SetTextColor(dc, a.theme.text);
+            let mut r = tile;
+            DrawTextW(dc, more.as_ptr(), more.len() as i32 - 1, &mut r, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
             SelectObject(dc, of);
             DeleteObject(f as _);
         }
