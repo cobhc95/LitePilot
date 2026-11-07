@@ -42,7 +42,12 @@ fn unique(name: &str, same_len: Option<u64>) -> (String, PathBuf, bool) {
 
 fn insert_token(name: &str) {
     super::thumbs::add(name);
-    unsafe { SetFocus(app().input_hwnd()); }
+    // A drop from Explorer leaves our window inactive, so SetFocus alone is ignored and typing beeps.
+    unsafe {
+        let a = app();
+        windows_sys::Win32::UI::WindowsAndMessaging::SetForegroundWindow(a.hwnd);
+        SetFocus(a.input_hwnd());
+    }
 }
 
 fn add_file(src: &Path) {
@@ -56,7 +61,7 @@ fn add_file(src: &Path) {
     let (name, dest, reuse) = unique(&clean(&shown), Some(meta.len()));
     if !reuse && std::fs::copy(src, &dest).is_err() { return app::show_note(&format!("Couldn't read {shown}.")); }
     insert_token(&name);
-    if matches!(attach::kind(&name), attach::Kind::Other) {
+    if matches!(attach::kind(&name), attach::Kind::Other) && !crate::core::office::is_office(&name) {
         // Anything that isn't a picture, PDF, or text is only useful to the model if it reads as text.
         let mut head = [0u8; 2048];
         let n = std::fs::File::open(&dest).and_then(|mut f| std::io::Read::read(&mut f, &mut head)).unwrap_or(0);

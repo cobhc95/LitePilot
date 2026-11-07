@@ -35,9 +35,11 @@ const MAX_FETCH: usize = 6 * 1024 * 1024;
 pub struct Colors { pub bg: u32, pub tile: u32, pub text: u32 }
 
 /// Pictures stay in memory as their compressed bytes. Old ones are shrunk once (`shrunk`), never removed.
-struct Img { key: u64, label: String, bytes: Vec<u8>, shrunk: bool, px: (u32, u32), thumb: HBITMAP, thumb_px: (i32, i32), failed: bool, remote: Option<String>, loading: bool }
+struct Img { key: u64, label: String, bytes: Vec<u8>, shrunk: bool, px: (u32, u32), thumb: HBITMAP, thumb_px: (i32, i32), failed: bool, remote: Option<String>, loading: bool, ext: String }
 
 impl Img {
+    /// An attached non-picture file, drawn as a tile with its type (no bytes are kept).
+    fn is_doc(&self) -> bool { !self.ext.is_empty() }
     fn have(&self) -> bool { !self.bytes.is_empty() }
     fn read(&self) -> Vec<u8> { self.bytes.clone() }
 }
@@ -207,7 +209,7 @@ fn register(label: &str, url: &str) -> Option<usize> {
             let px = image_size(&bytes).filter(|s| s.0 > 0 && s.1 > 0)?;
             (bytes, px, None)
         };
-        let m = Img { key, label: label.to_string(), bytes, shrunk: false, px, thumb: std::ptr::null_mut(), thumb_px: (0, 0), failed: false, remote, loading: false };
+        let m = Img { key, label: label.to_string(), bytes, shrunk: false, px, thumb: std::ptr::null_mut(), thumb_px: (0, 0), failed: false, remote, loading: false, ext: String::new() };
         v.push(m);
         Some(v.len() - 1)
     })
@@ -218,10 +220,16 @@ fn register_file(name: &str, path: &std::path::Path) -> Option<usize> {
     let key = hash(&format!("file:{}", path.display()));
     IMGS.with_borrow_mut(|v| {
         if let Some(i) = v.iter().position(|m| m.key == key) { return (!v[i].failed).then_some(i); }
-        if v.len() >= MAX_ITEMS || std::fs::metadata(path).ok()?.len() > crate::core::attach::MAX_FILE { return None; }
+        if v.len() >= MAX_ITEMS { return None; }
+        if !matches!(crate::core::attach::kind(name), crate::core::attach::Kind::Image(_)) {
+            let ext: String = name.rsplit_once('.').map_or("FILE".into(), |(_, e)| e.chars().take(4).collect::<String>().to_uppercase());
+            v.push(Img { key, label: name.to_string(), bytes: Vec::new(), shrunk: true, px: (0, 0), thumb: std::ptr::null_mut(), thumb_px: (0, 0), failed: false, remote: None, loading: false, ext: if ext.is_empty() { "FILE".into() } else { ext } });
+            return Some(v.len() - 1);
+        }
+        if std::fs::metadata(path).ok()?.len() > crate::core::attach::MAX_FILE { return None; }
         let bytes = std::fs::read(path).ok()?;
         let px = image_size(&bytes).filter(|s| s.0 > 0 && s.1 > 0)?;
-        v.push(Img { key, label: name.to_string(), bytes, shrunk: false, px, thumb: std::ptr::null_mut(), thumb_px: (0, 0), failed: false, remote: None, loading: false });
+        v.push(Img { key, label: name.to_string(), bytes, shrunk: false, px, thumb: std::ptr::null_mut(), thumb_px: (0, 0), failed: false, remote: None, loading: false, ext: String::new() });
         Some(v.len() - 1)
     })
 }
@@ -599,6 +607,12 @@ pub fn paint(view: HWND, c: Colors) {
                 let x = x0 + (k - offset) as i32 * (tw + gap);
                 let r = RECT { left: x, top: y0, right: x + tw, bottom: y0 + th };
                 tiles.push((k, r));
+                let doc = IMGS.with_borrow(|v| v[id].is_doc().then(|| v[id].ext.clone()));
+                if let Some(ext) = doc {
+                    round_fill(hdc, &r, c.tile, s(8));
+                    glyph(hdc, &r, &ext, c.text, s(15));
+                    continue;
+                }
                 let ready = IMGS.with_borrow(|v| v[id].have());
                 if !ready {
                     round_fill(hdc, &r, c.tile, s(8));
@@ -677,7 +691,11 @@ pub fn click(view: HWND, x: i32, y: i32, c: Colors) -> bool {
     });
     match hit {
         Some((_, None)) => unsafe { InvalidateRect(view, std::ptr::null(), 0); true },
-        Some((gid, Some(k))) => { open_viewer(view, gid, k, c); true }
+        Some((gid, Some(k))) => {
+            let is_doc = GALLERIES.with_borrow(|g| g[gid].imgs.get(k).copied()).is_some_and(|id| IMGS.with_borrow(|v| v[id].is_doc()));
+            if !is_doc { open_viewer(view, gid, k, c); }
+            true
+        }
         None => false,
     }
 }
@@ -751,7 +769,12 @@ fn show_index(step: isize) {
     let Some((h, gid, mut index, colors)) = VIEWER.with_borrow(|v| v.as_ref().map(|v| (v.hwnd, v.gid, v.index, v.colors))) else { return };
     let Some(ids) = GALLERIES.with_borrow(|g| g.get(gid).map(|x| x.imgs.clone())) else { return close_viewer() };
     if ids.is_empty() { return close_viewer(); }
-    index = (index as isize + step).clamp(0, ids.len() as isize - 1) as usize;
+    let is_doc = |i: usize| IMGS.with_borrow(|v| v[ids[i]].is_doc());
+    let last = ids.len() as isize - 1;
+    let mut next = (index as isize + step).clamp(0, last);
+    // File tiles have nothing to show large, so paging skips over them.
+    while step != 0 && next > 0 && next < last && is_doc(next as usize) { next += step.signum(); }
+    if !is_doc(next as usize) { index = next as usize; }
     let id = ids[index];
     unsafe {
         let mut r: RECT = std::mem::zeroed();

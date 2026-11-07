@@ -63,7 +63,8 @@ pub fn b64(data: &[u8]) -> String {
 fn note(s: String) -> Value { json!({"type": "text", "text": s}) }
 
 /// The file's text, if it is small and reads as text.
-fn read_text(p: &Path) -> Option<String> {
+fn read_text(p: &Path, name: &str) -> Option<String> {
+    if super::office::is_office(name) { return super::office::extract(p, name); }
     if std::fs::metadata(p).ok()?.len() > MAX_TEXT { return None; }
     let b = std::fs::read(p).ok()?;
     if b.contains(&0) { return None; }
@@ -92,7 +93,7 @@ fn part(f: ApiFormat, n: &str, dir: &Path, budget: &mut u64) -> Value {
             Some(b) => b,
             None => note(format!("(Attachment {n} could not be read.)")),
         },
-        _ => match read_text(&p) {
+        _ => match read_text(&p, n) {
             Some(t) => note(format!("File {n}:\n```\n{t}\n```")),
             None => note(format!("(Attachment {n} is a type this model can't read, so only its name was sent.)")),
         },
@@ -117,7 +118,7 @@ pub fn for_cli(text: &str, dir: &Path) -> (String, Vec<PathBuf>) {
         match kind(&n) {
             Kind::Image(_) | Kind::Pdf if len <= MAX_FILE => media.push(p),
             Kind::Image(_) | Kind::Pdf => extra += &format!("\n\n(Attachment {n} was too large to send.)"),
-            _ => match read_text(&p) {
+            _ => match read_text(&p, &n) {
                 Some(t) => extra += &format!("\n\nFile {n}:\n```\n{t}\n```"),
                 None => extra += &format!("\n\n(Attachment {n} is a type this model can't read, so only its name was sent.)"),
             },

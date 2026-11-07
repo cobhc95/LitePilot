@@ -7,6 +7,7 @@ pub mod history;
 pub mod keys;
 pub mod mcp;
 pub mod memory;
+pub mod office;
 pub mod protocol;
 pub mod resident;
 pub mod tidy;

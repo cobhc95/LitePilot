@@ -411,7 +411,7 @@ pub fn message(m: &Msg, th: &Theme) -> String {
         let mut shown = m.text.clone();
         let pics: Vec<(String, std::path::PathBuf)> = ATT_DIR.with_borrow(|d| match d {
             Some(d) => crate::core::attach::names(&m.text).into_iter()
-                .filter(|n| matches!(crate::core::attach::kind(n), crate::core::attach::Kind::Image(_)) && d.join(n).is_file())
+                .filter(|n| d.join(n).is_file())
                 .map(|n| { let p = d.join(&n); (n, p) }).collect(),
             None => Vec::new(),
         });
