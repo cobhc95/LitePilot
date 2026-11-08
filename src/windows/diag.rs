@@ -12,7 +12,7 @@ pub const SERVER: &str = "lp_system";
 const SECS: u64 = 10;
 const MAX_READ: u64 = 64 * 1024;
 /// About three rounds of tool calls per message; past that the model is told to answer with what it has.
-const MAX_CALLS: u32 = 6;
+const MAX_CALLS: u32 = 10;
 /// Written by the app before each message that has tools, so the call count starts again.
 pub const TURN_FILE: &str = "diag-turn";
 
@@ -86,6 +86,73 @@ fn script(tool: &str, what: &str) -> Option<&'static str> {
     })
 }
 
+/// The `ps` tool: a script the model wrote, run only if every part of it is on an allowlist. The text arrives in an
+/// environment variable (never as command text), is parsed into a syntax tree, and is refused unless it uses only
+/// read-only cmdlets (by resolved name, so aliases can't sneak past), plain variables, allowlisted types and methods,
+/// and no redirection, call operator, function, dot-source or write. The run itself is in ConstrainedLanguage mode as
+/// a second wall. No cmdlet that reads file contents is allowed (the `file` tool does that, inside three folders).
+const PS_GUARD: &str = r##"$ErrorActionPreference='Stop';$ProgressPreference='SilentlyContinue';[Console]::OutputEncoding=[Text.Encoding]::UTF8
+function J($m){ConvertTo-Json -Compress @{error=$m}}
+try{
+$wCmd='Get-Process','Get-Service','Get-CimInstance','Get-ChildItem','Get-Item','Get-ItemProperty','Get-ItemPropertyValue','Get-PSDrive','Get-Volume','Get-Disk','Get-Partition','Get-PhysicalDisk','Get-StoragePool','Get-StorageReliabilityCounter','Get-NetAdapter','Get-NetAdapterStatistics','Get-NetIPConfiguration','Get-NetIPAddress','Get-NetIPInterface','Get-NetRoute','Get-NetTCPConnection','Get-NetUDPEndpoint','Get-NetFirewallProfile','Get-NetFirewallRule','Get-NetConnectionProfile','Get-DnsClientServerAddress','Get-DnsClientCache','Get-DnsClient','Get-SmbShare','Get-SmbConnection','Get-HotFix','Get-WinEvent','Get-EventLog','Get-ComputerInfo','Get-Culture','Get-UICulture','Get-TimeZone','Get-WinUserLanguageList','Get-WinSystemLocale','Get-WinHomeLocation','Get-MpComputerStatus','Get-MpThreatDetection','Get-BitLockerVolume','Get-Tpm','Get-LocalUser','Get-LocalGroup','Get-LocalGroupMember','Get-ScheduledTask','Get-ScheduledTaskInfo','Get-PnpDevice','Get-PnpDeviceProperty','Get-AppxPackage','Get-WindowsCapability','Get-Printer','Get-PrintJob','Get-Counter','Get-Command','Get-Module','Get-Member','Get-FileHash','Get-Acl','Get-Date','Get-ExecutionPolicy','Get-Location','Get-Alias','Get-Uptime','Test-Path','Test-Connection','Test-NetConnection','Resolve-DnsName','Resolve-Path','Split-Path','Join-Path','Select-Object','Where-Object','ForEach-Object','Sort-Object','Group-Object','Measure-Object','Compare-Object','Format-Table','Format-List','Format-Wide','Out-String','Out-Null','ConvertTo-Json','ConvertFrom-Json','ConvertTo-Csv','Write-Output','New-TimeSpan'
+$wExe='systeminfo','hostname','whoami','getmac','tasklist','driverquery','netstat','ping','tracert','nslookup'
+$wType='math','string','int','int32','int64','long','double','single','float','decimal','bool','boolean','datetime','timespan','array','regex','text.regularexpressions.regex','convert','environment','version','char','byte','guid','uri','pscustomobject','ordered','hashtable'
+$wMeth='tostring','trim','trimstart','trimend','split','replace','contains','startswith','endswith','substring','indexof','lastindexof','tolower','toupper','padleft','padright','round','floor','ceiling','abs','min','max','pow','sqrt','parse','join','format','isnullorempty','isnullorwhitespace','concat','toint32','toint64','todouble','match','ismatch','matches','containskey','add','adddays','addhours','addminutes','addmonths','addyears','where','foreach','getenvironmentvariable'
+$wNode='ScriptBlockAst','NamedBlockAst','StatementBlockAst','PipelineAst','CommandAst','CommandParameterAst','CommandExpressionAst','StringConstantExpressionAst','ConstantExpressionAst','ExpandableStringExpressionAst','VariableExpressionAst','MemberExpressionAst','InvokeMemberExpressionAst','IndexExpressionAst','BinaryExpressionAst','UnaryExpressionAst','ParenExpressionAst','SubExpressionAst','ArrayExpressionAst','ArrayLiteralAst','HashtableAst','ScriptBlockExpressionAst','TypeExpressionAst','TypeConstraintAst','ConvertExpressionAst','AssignmentStatementAst','IfStatementAst','ForEachStatementAst','ForStatementAst','WhileStatementAst','TryStatementAst','CatchClauseAst','BreakStatementAst','ContinueStatementAst','MergingRedirectionAst'
+$src=$env:LP_SCRIPT;$tk=$null;$er=$null
+$ast=[Management.Automation.Language.Parser]::ParseInput($src,[ref]$tk,[ref]$er)
+if($er.Count){J ('syntax error: '+$er[0].Message);exit}
+$bad=$null
+foreach($n in $ast.FindAll({param($x)$true},$true)){
+  $t=$n.GetType().Name
+  if($wNode -notcontains $t){$bad="refused: $t is not allowed (writes, redirection, functions and flow tricks are refused)";break}
+  if($t -eq 'CommandAst'){
+    $e=$n.CommandElements[0]
+    if($n.InvocationOperator -ne 'Unknown' -or $e -isnot [Management.Automation.Language.StringConstantExpressionAst]){$bad='refused: a command must be written as a plain name, without & or .';break}
+    $c=@(Get-Command -Name ([Management.Automation.WildcardPattern]::Escape($e.Value)) -ErrorAction SilentlyContinue)|select -First 1
+    if($c -and $c.CommandType -eq 'Alias'){$c=@(Get-Command -Name ([Management.Automation.WildcardPattern]::Escape($c.Definition)) -ErrorAction SilentlyContinue)|select -First 1}
+    $ok=$c -and ((($c.CommandType -eq 'Cmdlet' -or $c.CommandType -eq 'Function') -and $wCmd -contains $c.Name) -or ($c.CommandType -eq 'Application' -and $wExe -contains [IO.Path]::GetFileNameWithoutExtension($c.Name) -and $c.Source -like "$env:SystemRoot\System32\*"))
+    if(-not $ok){$bad="refused: command '$($e.Value)' is not on the read-only list";break}
+  }
+  elseif($t -eq 'InvokeMemberExpressionAst'){
+    if($n.Member -isnot [Management.Automation.Language.StringConstantExpressionAst] -or $wMeth -notcontains $n.Member.Value.ToLower()){$bad="refused: method '$($n.Member.Extent.Text)' is not on the read-only list";break}
+    if($n.Static -and $n.Expression -isnot [Management.Automation.Language.TypeExpressionAst]){$bad='refused: static call on a non-type';break}
+  }
+  elseif($t -eq 'MemberExpressionAst'){
+    if($n.Static -and $n.Expression -isnot [Management.Automation.Language.TypeExpressionAst]){$bad='refused: static member on a non-type';break}
+  }
+  elseif($t -eq 'TypeExpressionAst' -or $t -eq 'TypeConstraintAst'){
+    $tn=($n.TypeName.Name.ToLower() -replace '\[\]$','') -replace '^system\.',''
+    if($wType -notcontains $tn){$bad="refused: type [$($n.TypeName.Name)] is not allowed";break}
+  }
+  elseif($t -eq 'VariableExpressionAst'){
+    $vp=$n.VariablePath
+    if(@('executioncontext','host','pshome','profile') -contains $vp.UserPath.ToLower() -or ($vp.IsDriveQualified -and $vp.DriveName -ne 'env')){$bad="refused: variable `$$($vp.UserPath) is not allowed";break}
+  }
+  elseif($t -eq 'AssignmentStatementAst'){
+    $l=$n.Left
+    $plain=($l -is [Management.Automation.Language.VariableExpressionAst] -and -not $l.VariablePath.IsDriveQualified) -or ($l -is [Management.Automation.Language.IndexExpressionAst] -and $l.Target -is [Management.Automation.Language.VariableExpressionAst] -and -not $l.Target.VariablePath.IsDriveQualified)
+    if(-not $plain){$bad='refused: you may only assign to plain variables';break}
+  }
+}
+if($bad){J $bad;exit}
+$ErrorActionPreference='Continue'
+$ExecutionContext.SessionState.LanguageMode='ConstrainedLanguage'
+$r=@(Invoke-Expression $src)
+if($r.Count -eq 0){'[]'}
+elseif(@($r|?{$_ -is [string]}).Count -eq $r.Count){$r -join "`n"}
+elseif($r[0].PSObject.TypeNames[0] -like 'Microsoft.PowerShell.Commands.Internal.Format*'){($r|Out-String -Width 200).Trim()}
+else{ConvertTo-Json -InputObject $r -Compress -Depth 3}
+}catch{J $_.Exception.Message}"##;
+
+/// Runs a model-written script through PS_GUARD. 20 s, then the whole process tree is stopped.
+fn ps_script(src: &str) -> Result<String, String> {
+    let mut c = super::util::hidden(&system32(r"WindowsPowerShell\v1.0\powershell.exe").to_string_lossy());
+    c.args(["-NoProfile", "-NonInteractive", "-EncodedCommand", &b64_utf16(PS_GUARD)]).env("LP_SCRIPT", src);
+    let (out, err) = super::util::run_for(c, 20)?;
+    Ok(if out.trim().is_empty() { d::error(err.trim()) } else { out })
+}
+
 fn b64_utf16(s: &str) -> String {
     const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let bytes: Vec<u8> = s.encode_utf16().flat_map(|u| u.to_le_bytes()).collect();
@@ -125,6 +192,7 @@ fn run(tool: &str, what: &str, a: &Value) -> Result<String, String> {
             c.arg("/getactivescheme");
             Ok(json!({"plan": exe(c)?.trim()}).to_string())
         }
+        ("ps", _) => ps_script(&d::script(a)?),
         ("net", "wifi") => wifi(),
         ("net", "hosts") => {
             let t = std::fs::read_to_string(system32(r"drivers\etc\hosts")).map_err(|e| e.to_string())?;
@@ -160,7 +228,7 @@ fn call(tool: &str, a: &Value) -> String {
         Some(c) => Err(format!("what must be one of: {}", c.whats.join(", "))),
         None => Err("unknown tool".into()),
     };
-    let cap = if tool == "events" || (tool, what) == ("file", "read") { BIG_CAP } else { CAP };
+    let cap = if tool == "events" || tool == "ps" || (tool, what) == ("file", "read") { BIG_CAP } else { CAP };
     let text = d::shape(&out.unwrap_or_else(|e| d::error(if e == "timeout" { "timed out after 10 s" } else { &e })), cap);
     audit(tool, a, text.len(), t0.elapsed());
     text
@@ -479,6 +547,31 @@ mod tests {
             assert!(call("nope", &json!({"what": "os"})).contains("unknown tool"));
         }
         assert!(call("net", &json!({"what": "connect", "host": "127.0.0.1", "port": 0})).contains("port must be"));
+    }
+
+    #[test]
+    fn ps_runs_read_only_scripts_and_refuses_the_rest() {
+        let run = |s: &str| call("ps", &json!({"what": "run", "script": s}));
+        for good in ["Get-Process | Sort-Object WS -Descending | Select-Object -First 2 Name,Id | ConvertTo-Json -Compress",
+            "gps | ? { $_.WS -gt 1MB } | select -f 1 | % { $_.Name }", "(Get-CimInstance Win32_OperatingSystem).Caption", "'{0:N1}' -f (2.567 * 1)",
+            "$h=@{}; $h['a']=1; foreach($k in $h.Keys){ \"$k=$($h[$k])\" }", "Get-ChildItem $env:SystemRoot -EA 0 | select -f 3 Name | ft | Out-String", "hostname"] {
+            let o = run(good);
+            assert!(!o.contains("refused") && !o.contains("\"error\""), "{good}: {o}");
+        }
+        assert!(run("'{0:N1}' -f 2.567").contains("2.6"));
+        let marker = std::env::temp_dir().join(format!("lp-ps-write-{}.txt", std::process::id()));
+        let m = marker.display().to_string();
+        for bad in [format!("'x' > '{m}'"), format!("Set-Content '{m}' x"), format!("Out-File '{m}'"), "Remove-Item C:\\nope".into(), "Get-Content C:\\Windows\\win.ini".into(),
+            "& calc".into(), ". calc".into(), "calc".into(), "cmd /c dir".into(), "iex 'gps'".into(), "Invoke-Expression 'gps'".into(), "Start-Process calc".into(),
+            "(Get-Process notepad).Kill()".into(), "[IO.File]::Delete('x')".into(), "[Diagnostics.Process]::Start('calc')".into(), "$env:X='1'".into(),
+            "(Get-Process)[0].PriorityClass='Idle'".into(), "function f{1}".into(), "$ExecutionContext.SessionState.LanguageMode".into(), "Get-Process; Stop-Process -Id 1".into(),
+            "gps | % { & $_ }".into(), "Get-Process | Export-Csv x.csv".into(), "Set-Alias gps Remove-Item".into(), "ipconfig /release".into(), "powershell -c 1".into(),
+            "[scriptblock]::Create('1')".into(), "New-Object Net.WebClient".into(), "Invoke-WebRequest http://x".into(), "$x=1; $x.GetType()".into(), "Select-String a C:\\x".into()] {
+            let o = run(&bad);
+            assert!(o.contains("\"error\"") || o.contains("refused"), "{bad}: {o}");
+        }
+        assert!(!marker.exists());
+        assert!(run("").contains("1-2000") && run(&"1;".repeat(1500)).contains("1-2000"));
     }
 
     #[test]

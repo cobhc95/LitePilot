@@ -37,7 +37,7 @@ const FRESH: &[&str] = &[
     " weather", " forecast", " temperature in", " score", " results", " who won", " fixture", " standings", " match ",
     " stock ", " stocks", " shares", " exchange rate", " crypto", " bitcoin",
     " open now", " opening hours", " opening times", " near me", " nearby", " closest", " directions", " address of", " phone number",
-    " review", " reviews", " rating", " vs ", " versus", " compare", " comparison", " benchmark", " best ", " top 10", " top 5", " recommend",
+    " review", " reviews", " rating", " any good", " worth it", " worth buying", " worth getting", " good or bad", " is it good", " are they good", " vs ", " versus", " compare", " comparison", " benchmark", " best ", " top 10", " top 5", " recommend",
     " who is ", " who s ", " who are ", " what happened", " when is ", " when does ", " when will ", " where is ", " where can ",
     " population", " ceo ", " president", " prime minister", " election", " law ", " legal in", " visa ",
     " spec ", " specs", " specifications", " requirements", " compatible", " support ",
@@ -190,7 +190,7 @@ mod tests {
     #[test]
     fn fresh_questions_need_search() {
         for m in ["What's the price of an RTX 5090?", "latest news on the Artemis mission", "weather in Colchester tomorrow",
-            "who won the match last night", "is the Pixel 11 out yet? search it", "best budget headphones 2026"] {
+            "who won the match last night", "is the Pixel 11 out yet? search it", "best budget headphones 2026", "are they any good", "is the Orbit 11 worth it", "can you review them please"] {
             assert!(search(m), "{m}");
         }
     }

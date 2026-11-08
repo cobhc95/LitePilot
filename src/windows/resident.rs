@@ -188,8 +188,9 @@ fn spawn(kind: &str, model: &str, effort: &str, search: bool, memory: &str, engi
     } else {
         c.arg("app-server");
         // Chat only: nothing that starts helper processes or takes memory for tools this app never uses.
+        // Never disable code_mode_host: Codex's web_search tool runs through it, and without it the model has no search.
         for f in ["apps", "browser_use", "browser_use_external", "computer_use", "in_app_browser", "multi_agent", "shell_tool", "image_generation", "skill_search", "tool_suggest", "remote_plugin", "shell_snapshot",
-            "unified_exec", "view_image", "sleep_tool", "goals", "plugins", "hooks", "code_mode_host", "skill_mcp_dependency_install", "workspace_dependencies", "plugin_discovery_prefetch", "deferred_tool_world_state", "mentions_v2"] {
+            "unified_exec", "view_image", "sleep_tool", "goals", "plugins", "hooks", "skill_mcp_dependency_install", "workspace_dependencies", "plugin_discovery_prefetch", "deferred_tool_world_state", "mentions_v2"] {
             c.args(["--disable", f]);
         }
         // Codex's own permission, environment and project-doc blocks are for coding; a chat needs none of them.

@@ -4,8 +4,11 @@ use super::util::hidden;
 use std::path::PathBuf;
 
 /// Added while web search is switched on for this chat (only after a message needed it).
-pub const SEARCH: &str = " You have web search: use it for facts that may have changed or that you may not know exactly, then answer \
-and name sources briefly. Skip it for chat, writing, code help and things the user told you.";
+pub const SEARCH: &str = " You have web search and page reading. For products, reviews, specs, prices, science, health, law, or anything \
+that may have changed or that you don't know exactly, research before answering: run several searches, open the best pages (professional \
+reviews, independent measurements, manufacturer specs, studies) and compare sources. Answer objectively and precisely: separate measured \
+facts from opinion, say where sources disagree or are thin, never invent specs, numbers or quotes, and name sources with links. Skip it \
+for chat, writing, code help and things the user told you.";
 /// Sent with a message about memory itself (see core::need::about_memory) to a ChatGPT account using its own memory.
 pub const CODEX_MEMORY: &str = "\n\n(About your memory: facts the user saved in LitePilot are shown when relevant, and you also learn \
 from past chats in the background, about an hour after they end. To save something now, the user can type \"remember that ...\". \
