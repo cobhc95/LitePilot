@@ -199,6 +199,13 @@ pub(super) unsafe extern "system" fn child_proc(h: HWND, msg: u32, wp: WPARAM, l
         let mut pt: POINT = std::mem::zeroed();
         GetCursorPos(&mut pt);
         ScreenToClient(h, &mut pt);
+        // The scroll bar strip (the same width that grabs clicks) keeps the normal arrow, not the I-beam or hand.
+        if let Some((track, _)) = scrollbar(h) {
+            if pt.x >= track.left - 6 * (GetDpiForWindow(h).max(96) as i32) / 96 {
+                SetCursor(LoadCursorW(std::ptr::null_mut(), IDC_ARROW));
+                return 1;
+            }
+        }
         if images::over_control(pt.x, pt.y) {
             SetCursor(LoadCursorW(std::ptr::null_mut(), IDC_HAND));
             return 1;
