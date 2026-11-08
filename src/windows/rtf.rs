@@ -1,6 +1,7 @@
 //! Markdown to RTF for RichEdit. Handles streaming partial Markdown without failing.
 use crate::core::Msg;
 
+#[derive(Clone)]
 pub struct Theme { pub bg: u32, pub text: u32, pub muted: u32, pub accent: u32, pub code: u32, pub bubble: u32, pub string: u32, pub comment: u32, pub keyword: u32, pub font: String, pub size: u32, pub spacing: u32 }
 
 fn rgb(c: u32) -> String {

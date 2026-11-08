@@ -47,7 +47,6 @@ const CMD_QUIT: usize = 102;
 
 const EM_STREAMIN_: u32 = 0x449;
 const EM_SETBKGNDCOLOR_: u32 = 0x443;
-const EM_SETZOOM_: u32 = 0x4E1; // EM_SETZOOM: numerator, denominator (percent over 100)
 const EM_SETCHARFORMAT_: u32 = 0x444;
 const EM_SETEVENTMASK_: u32 = 0x445;
 const EM_EXLIMITTEXT_: u32 = 0x435;
@@ -189,7 +188,7 @@ fn set_card_width() -> bool {
         GetClientRect(a.view, &mut rc);
         let dpi = GetDpiForWindow(a.view).max(96) as usize;
         // The chat zooms its layout, so cards are sized in unzoomed twips to still fill the window exactly.
-        let tw = ((rc.right.max(0) as usize).saturating_sub((24 + RIGHT_PAD as usize) * dpi / 96) * 1440 / dpi) * 100 / a.cfg.chat_zoom.max(1) as usize;
+        let tw = (rc.right.max(0) as usize).saturating_sub((24 + RIGHT_PAD as usize) * dpi / 96) * 1440 / dpi;
         rtf::set_table_scroll(!a.cfg.wrap_tables);
         // The sideways scroll bar exists only when tables keep their width.
         let style = GetWindowLongW(a.view, GWL_STYLE) as u32;
@@ -213,7 +212,6 @@ pub fn set_chat_zoom(pct: u32) {
     let pct = pct.clamp(50, 300);
     if pct == a.cfg.chat_zoom { return; }
     a.cfg.chat_zoom = pct;
-    unsafe { SendMessageW(a.view, EM_SETZOOM_, pct as usize, 100); }
     rerender();
     unsafe { InvalidateRect(a.view, std::ptr::null(), 1); }
     save_config();
@@ -1072,8 +1070,11 @@ fn render_view(mode: Scroll) {
 
 /// The empty reply that's still loading holds a line per status step; any other message is itself.
 fn message_rtf(a: &App, m: &Msg, last: bool) -> String {
-    if last && a.streaming && m.role == "assistant" && m.text.is_empty() && !a.steps.is_empty() { rtf::status_space(a.steps.len(), &a.theme) }
-    else { rtf::set_attach_dir(a.data.join("attachments")); rtf::message(m, &a.theme) }
+    // The chat zoom scales every font in the chat (not the typing box or the window's chrome).
+    let mut th = a.theme.clone();
+    th.size = (th.size * a.cfg.chat_zoom.max(1) + 50) / 100;
+    if last && a.streaming && m.role == "assistant" && m.text.is_empty() && !a.steps.is_empty() { rtf::status_space(a.steps.len(), &th) }
+    else { rtf::set_attach_dir(a.data.join("attachments")); rtf::message(m, &th) }
 }
 
 fn status_showing(a: &App) -> bool {
@@ -2635,7 +2636,6 @@ pub fn run(show_now: bool) {
         a.input = child("RICHEDIT50W", WS_VSCROLL | ES_MULTI | ES_AUTOV, hwnd, 0, a.font);
         SendMessageW(a.input, EM_SETTEXTMODE_, 1, 0); // plain text
         SendMessageW(a.view, EM_EXLIMITTEXT_, 0, 64 * 1024 * 1024);
-        SendMessageW(a.view, EM_SETZOOM_, a.cfg.chat_zoom as usize, 100);
         SendMessageW(a.view, EM_SETBKGNDCOLOR_, 0, a.theme.bg as isize);
         SendMessageW(a.view, EM_SETEVENTMASK_, 0, 0x0400_0000 | 0x0010_0000 | 0x4); // ENM_LINK | ENM_DROPFILES | ENM_SCROLL
         SendMessageW(a.input, EM_SETEVENTMASK_, 0, 0x0010_0000);
