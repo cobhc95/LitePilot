@@ -10,8 +10,42 @@ use std::sync::{Mutex, OnceLock};
 pub struct Window { pub used: f64, pub resets: i64 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
-pub struct Usage { pub five_hour: Option<Window>, pub week: Option<Window>, /// when it was read (Unix seconds)
-    pub at: i64 }
+pub struct Usage {
+    pub five_hour: Option<Window>,
+    pub week: Option<Window>,
+    /// When it was read (Unix seconds).
+    pub at: i64,
+}
+
+/// Tokens one model call used, as the provider reports them: input (cached included) plus output.
+/// Claude Code's `result` line (the whole turn) and Codex's per-call `thread/tokenUsage/updated`.
+pub fn cli_tokens(line: &str) -> Option<u64> {
+    if !line.contains("\"result\"") && !line.contains("tokenUsage") { return None; }
+    let v: Value = serde_json::from_str(line).ok()?;
+    if v["type"] == "result" {
+        let u = &v["usage"];
+        return Some(["input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens"].iter().filter_map(|k| u[k].as_u64()).sum());
+    }
+    (v["method"] == "thread/tokenUsage/updated").then(|| v["params"]["tokenUsage"]["last"]["totalTokens"].as_u64()).flatten()
+}
+
+/// Every model call that went into one reply (tool rounds included), summed; an estimate when none reported.
+#[derive(Default, Debug)]
+pub struct Tally(Option<u64>);
+impl Tally {
+    pub fn add(&mut self, n: u64) { self.0 = Some(self.0.unwrap_or(0) + n); }
+    /// "1,842 tokens", or "~1,842 tokens" from `estimate` when the provider reported nothing.
+    pub fn label(&self, estimate: u64) -> String {
+        let (n, mark) = match self.0 { Some(n) => (n, ""), None => (estimate, "~") };
+        let d = n.to_string();
+        let mut s = String::new();
+        for (i, c) in d.chars().enumerate() {
+            if i > 0 && (d.len() - i) % 3 == 0 { s.push(','); }
+            s.push(c);
+        }
+        format!("{mark}{s} tokens")
+    }
+}
 
 fn store() -> &'static Mutex<HashMap<String, Usage>> {
     static S: OnceLock<Mutex<HashMap<String, Usage>>> = OnceLock::new();
@@ -69,5 +103,34 @@ mod tests {
         assert_eq!(u.five_hour.unwrap().used, 1.0);
         assert_eq!(u.week.unwrap().used, 61.0);
         assert!(from_claude(&serde_json::json!({"type":"result"})).is_none());
+    }
+
+    #[test]
+    fn one_call_reply() {
+        let mut t = Tally::default();
+        assert_eq!(t.label(1842), "~1,842 tokens"); // nothing reported: a marked estimate
+        t.add(cli_tokens(r#"{"type":"result","subtype":"success","usage":{"input_tokens":2,"cache_creation_input_tokens":905,"cache_read_input_tokens":0,"output_tokens":13}}"#).unwrap());
+        assert_eq!(t.label(0), "920 tokens");
+        assert_eq!(cli_tokens(r#"{"type":"stream_event","event":{"type":"content_block_delta"}}"#), None);
+    }
+
+    #[test]
+    fn tool_rounds_are_summed() {
+        // Codex reports each model call; a reply with two tool rounds makes three calls.
+        let mut t = Tally::default();
+        for total in [12846, 13120, 1_002_400] {
+            let l = format!(r#"{{"method":"thread/tokenUsage/updated","params":{{"tokenUsage":{{"total":{{"totalTokens":1}},"last":{{"totalTokens":{total}}}}}}}}}"#);
+            t.add(cli_tokens(&l).unwrap());
+        }
+        assert_eq!(t.label(0), "1,028,366 tokens");
+        // Anthropic and OpenAI API streams report input at the start and output at the end of each call.
+        let mut t = Tally::default();
+        for l in [r#"{"type":"message_start","message":{"usage":{"input_tokens":1200,"cache_read_input_tokens":300,"output_tokens":1}}}"#,
+                  r#"{"type":"message_delta","usage":{"output_tokens":342}}"#,
+                  r#"{"type":"message_start","message":{"usage":{"input_tokens":1700,"output_tokens":1}}}"#,
+                  r#"{"type":"message_delta","usage":{"output_tokens":58}}"#] {
+            if let Some(crate::core::protocol::Event::Tokens(n)) = crate::core::protocol::parse_sse(crate::core::protocol::ApiFormat::Anthropic, l) { t.add(n); }
+        }
+        assert_eq!(t.label(0), "3,600 tokens");
     }
 }

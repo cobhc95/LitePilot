@@ -4,6 +4,7 @@
 //! minimum a few seconds after each reply, and it is shut down after a few idle minutes.
 use super::util::hidden;
 use crate::core::protocol::{flatten_prompt, parse_claude_line, Event};
+use crate::core::usage::cli_tokens;
 use crate::core::{attach, resident as rpc, Msg};
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
@@ -129,9 +130,19 @@ pub fn set_memory_tool(dir: &Path, on: bool) {
 }
 fn memory_tool() -> Option<(String, String)> {
     let dir = MEMTOOL.lock().unwrap_or_else(|e| e.into_inner()).clone()?;
-    let exe = std::env::current_exe().ok()?.to_string_lossy().replace('\\', "/");
-    Some((exe, dir))
+    Some((self_exe(), dir))
 }
+
+/// The diagnostic tool categories the next message needs (none for ordinary chat). They are part of `cfg_key`,
+/// so a change restarts the CLI with only those tools, and ordinary chat carries no tool definitions at all.
+static DIAG: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
+pub fn set_diag_tools(cats: Vec<&'static str>) { *DIAG.lock().unwrap_or_else(|e| e.into_inner()) = cats; }
+fn diag_tools() -> Option<String> {
+    let d = DIAG.lock().unwrap_or_else(|e| e.into_inner());
+    (!d.is_empty()).then(|| d.join(","))
+}
+
+fn self_exe() -> String { super::util::exe_path().to_string_lossy().replace('\\', "/") }
 
 #[allow(clippy::too_many_arguments)]
 fn spawn(kind: &str, model: &str, effort: &str, search: bool, memory: &str, engine: bool, cwd: &Path, cfg: String) -> Option<Server> {
@@ -153,11 +164,11 @@ fn spawn(kind: &str, model: &str, effort: &str, search: bool, memory: &str, engi
         c.args(["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--include-partial-messages", "--verbose", "--tools", &tools.join(",")]);
         // Only the search tools are pre-approved; never the file tools, which acceptEdits limits to the memory folder.
         let mut allowed: Vec<String> = if search { vec!["WebSearch".into(), "WebFetch".into()] } else { vec![] };
-        // Read-only look at this computer (fixed operations, see sysinfo.rs), plus the facts lookup when memory is on.
+        // The diagnostic tools this message needs (see diag.rs), plus the facts lookup when memory is on.
         let mut servers = serde_json::Map::new();
-        if let Ok(exe) = std::env::current_exe() {
-            servers.insert(super::sysinfo::SERVER.into(), json!({"command": exe.to_string_lossy().replace('\\', "/"), "args": ["--system-mcp"]}));
-            allowed.push(format!("mcp__{}", super::sysinfo::SERVER));
+        if let Some(cats) = diag_tools() {
+            servers.insert(super::diag::SERVER.into(), json!({"command": self_exe(), "args": ["--system-mcp", cats]}));
+            allowed.push(format!("mcp__{}", super::diag::SERVER));
         }
         if let Some((exe, dir)) = memory_tool() {
             servers.insert(crate::core::mcp::SERVER.into(), json!({"command": exe, "args": ["--memory-mcp", dir]}));
@@ -182,10 +193,10 @@ fn spawn(kind: &str, model: &str, effort: &str, search: bool, memory: &str, engi
             c.arg("-c").arg(format!("mcp_servers.{n}.args=[\"--memory-mcp\",\"{dir}\"]"));
             c.arg("-c").arg(format!("mcp_servers.{n}.default_tools_approval_mode=\"approve\""));
         }
-        if let Ok(exe) = std::env::current_exe() {
-            let (n, exe) = (super::sysinfo::SERVER, exe.to_string_lossy().replace('\\', "/"));
-            c.arg("-c").arg(format!("mcp_servers.{n}.command=\"{exe}\""));
-            c.arg("-c").arg(format!("mcp_servers.{n}.args=[\"--system-mcp\"]"));
+        if let Some(cats) = diag_tools() {
+            let n = super::diag::SERVER;
+            c.arg("-c").arg(format!("mcp_servers.{n}.command=\"{}\"", self_exe()));
+            c.arg("-c").arg(format!("mcp_servers.{n}.args=[\"--system-mcp\",\"{cats}\"]"));
             c.arg("-c").arg(format!("mcp_servers.{n}.default_tools_approval_mode=\"approve\""));
         }
         c.arg("-c").arg(format!("web_search=\"{}\"", if search { "live" } else { "disabled" }));
@@ -200,15 +211,7 @@ fn spawn(kind: &str, model: &str, effort: &str, search: bool, memory: &str, engi
     }
     let mut child = c.spawn().ok()?;
     let (stdin, stdout) = (child.stdin.take()?, child.stdout.take()?);
-    let job = unsafe {
-        use std::os::windows::io::AsRawHandle;
-        let j = CreateJobObjectW(std::ptr::null(), std::ptr::null());
-        let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
-        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-        SetInformationJobObject(j, JobObjectExtendedLimitInformation, &info as *const _ as _, std::mem::size_of_val(&info) as u32);
-        AssignProcessToJobObject(j, child.as_raw_handle() as HANDLE);
-        j
-    };
+    let job = super::util::job_for(&child);
     JOB.store(job as isize, Ordering::SeqCst);
     Some(Server { child, stdin, out: BufReader::new(stdout), job, kind: kind.into(), cfg, thread: None, known: (0, rpc::hash(&[])), last: Instant::now(), trimmed: false, next_id: 0, engine })
 }
@@ -225,17 +228,17 @@ fn turn_claude(s: &mut Server, prompt: &str, media: &[PathBuf], sink: &dyn Fn(Ev
     let mut reply = String::new();
     loop {
         let Some(l) = s.line() else { sink(Event::Error(STOPPED.into())); return None };
+        if let Some(n) = cli_tokens(&l) { sink(Event::Tokens(n)); }
         match parse_claude_line(&l) {
             Some(Event::Text(t)) => { reply.push_str(&t); sink(Event::Text(t)); }
-            Some(Event::Status(t)) => sink(Event::Status(t)),
             Some(Event::Done) => { sink(Event::Done); return Some(reply); }
             Some(Event::Error(m)) => { sink(Event::Error(m)); return None; }
+            Some(e) => sink(e),
             None => {}
         }
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 /// The conversation inside a running Codex: made once, then reused for every message that follows on from it.
 fn ensure_thread(s: &mut Server, cwd: &Path, system: &str) -> Result<(), String> {
     if s.thread.is_some() { return Ok(()); }
@@ -250,7 +253,7 @@ fn ensure_thread(s: &mut Server, cwd: &Path, system: &str) -> Result<(), String>
 /// What the process or conversation was set up with. The memory is in the standing instructions, so an edit
 /// to it means a fresh conversation (Codex) or process (Claude).
 fn cfg_key(kind: &str, model: &str, effort: &str, search: bool, memory: &str, engine: bool) -> String {
-    let m = crate::core::memory::hash(&format!("{memory}{:?}", MEMTOOL.lock().unwrap_or_else(|e| e.into_inner())));
+    let m = crate::core::memory::hash(&format!("{memory}{:?}{:?}", MEMTOOL.lock().unwrap_or_else(|e| e.into_inner()), diag_tools()));
     if kind == "claude" { format!("{model}|{effort}|{search}|{m:x}|{engine}") } else { format!("{search}|{m:x}|{engine}") }
 }
 
@@ -266,7 +269,8 @@ pub fn reset() {
 
 fn system_for(search: bool, memory: &str) -> String {
     let base = if search { format!("{} {}", super::cli::SYSTEM, super::cli::SEARCH) } else { super::cli::SYSTEM.to_string() };
-    base + memory
+    let tools = if diag_tools().is_some() { crate::core::diag::SYSTEM_NOTE } else { "" };
+    base + tools + memory
 }
 
 /// Gets the CLI ready in the background (called when the window opens), so the first message doesn't wait
@@ -286,6 +290,7 @@ pub fn warm(kind: &str, model: &str, effort: &str, search: bool, memory: &str, e
     });
 }
 
+#[allow(clippy::too_many_arguments)]
 fn turn_codex(s: &mut Server, model: &str, effort: &str, prompt: &str, media: &[PathBuf], cwd: &Path, system: &str, sink: &dyn Fn(Event)) -> Option<String> {
     let fail = |m: String| { sink(Event::Error(m)); None };
     if let Err(e) = ensure_thread(s, cwd, system) { return fail(e); }
@@ -302,6 +307,7 @@ fn turn_codex(s: &mut Server, model: &str, effort: &str, prompt: &str, media: &[
     let (mut reply, mut last_err) = (String::new(), None);
     loop {
         let Some(l) = s.line() else { return fail(STOPPED.into()) };
+        if let Some(n) = cli_tokens(&l) { sink(Event::Tokens(n)); }
         match rpc::parse(&l) {
             rpc::Rpc::Text(t) => { reply.push_str(&t); sink(Event::Text(t)); }
             rpc::Rpc::Status(t) => sink(Event::Status(t)),

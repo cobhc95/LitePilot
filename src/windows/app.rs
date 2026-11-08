@@ -94,7 +94,7 @@ impl Cancel {
 
 pub struct App {
     pub hwnd: HWND,
-    header: HWND, view: HWND, input: HWND, btn: HWND, send_btn: HWND, pin_btn: HWND, history_btn: HWND, new_btn: HWND, mic_btn: HWND, tip: HWND, pub hot: HWND, spin: u32, small_font: HFONT, t0: Option<std::time::Instant>, first_tok: Option<std::time::Instant>, out_chars: usize, card_tw: usize, tried: Vec<String>, input_lines: u32,
+    header: HWND, view: HWND, input: HWND, btn: HWND, send_btn: HWND, pin_btn: HWND, history_btn: HWND, new_btn: HWND, mic_btn: HWND, tip: HWND, pub hot: HWND, spin: u32, small_font: HFONT, t0: Option<std::time::Instant>, first_tok: Option<std::time::Instant>, out_chars: usize, tally: crate::core::usage::Tally, in_chars: usize, card_tw: usize, tried: Vec<String>, input_lines: u32,
     /// The memory list before the last remember or forget, for the undo shortcut.
     mem_undo: Option<Vec<String>>,
     old_btn: isize,
@@ -1321,6 +1321,8 @@ fn send() {
     a.t0 = Some(std::time::Instant::now());
     a.first_tok = None;
     a.out_chars = 0;
+    a.tally = Default::default();
+    a.in_chars = req_msgs.iter().map(|m| m.text.chars().count()).sum();
     LAST_STAT.with_borrow_mut(|s| s.clear());
     clear_tip();
     send_tip(a, true);
@@ -1339,6 +1341,10 @@ fn send() {
             PostMessageW(hwnd as HWND, WM_EVENT, gen as usize, Box::into_raw(Box::new(e)) as isize);
         };
         if p.is_login() {
+            // Diagnostic tools only for messages that need them; ordinary chat sends none.
+            let tools = crate::core::diag::route(&last_user);
+            if !tools.is_empty() { let _ = std::fs::write(data.join(super::diag::TURN_FILE), gen.to_string()); }
+            cli::set_diag_tools(tools);
             let (mut extra, media) = crate::core::attach::for_cli(&last_user, &att);
             extra += &related;
             extra += &memory_store::lookup_note(&data, &mem_dir, &p.kind, mode);
@@ -1366,7 +1372,9 @@ fn finish(a: &mut App) {
             let toks = a.out_chars as f32 / 4.0;
             // A reply that lands in one piece has no streaming time to measure, so use the whole wait.
             let rate = toks / if span < 0.5 { total } else { span }.max(0.25);
-            format!("{total:.0}s \u{00B7} {rate:.0} tok/s")
+            // Third stat: every model call's tokens (tool rounds too), as reported; "~" marks an estimate.
+            let est = ((a.in_chars + a.out_chars) / 4) as u64;
+            format!("{total:.0}s \u{00B7} {rate:.0} tok/s \u{00B7} {}", a.tally.label(est))
         }
         _ => String::new(),
     };
@@ -1450,6 +1458,7 @@ fn on_event(gen: u64, e: Event) {
             a.dirty = true;
         }
         Event::Status(t) => add_step(a, t),
+        Event::Tokens(n) => a.tally.add(n),
         Event::Done => { a.tried.clear(); finish(a) }
         Event::Error(t) => {
             if !model_refused(&t) { a.tried.clear(); }
@@ -2606,7 +2615,7 @@ pub fn run(show_now: bool) {
         APP.store(Box::into_raw(Box::new(App {
             hwnd: std::ptr::null_mut(), header: std::ptr::null_mut(), view: std::ptr::null_mut(), input: std::ptr::null_mut(), btn: std::ptr::null_mut(),
             settings: std::ptr::null_mut(), cfg, data, msgs: Vec::new(), chat, loaded: false, gen: 0, streaming: false, dirty: false,
-            stream_start: 0, user_start: 0, user_end: 0, pin_user: false, steps: Vec::new(), cancel: None, send_btn: std::ptr::null_mut(), pin_btn: std::ptr::null_mut(), history_btn: std::ptr::null_mut(), new_btn: std::ptr::null_mut(), mic_btn: std::ptr::null_mut(), tip: std::ptr::null_mut(), hot: std::ptr::null_mut(), spin: 0, small_font: std::ptr::null_mut(), t0: None, first_tok: None, out_chars: 0, card_tw: 0, tried: Vec::new(), input_lines: 1, mem_undo: None, old_btn: 0, code_mark: 0, pill: RECT { left: 0, top: 0, right: 0, bottom: 0 },
+            stream_start: 0, user_start: 0, user_end: 0, pin_user: false, steps: Vec::new(), cancel: None, send_btn: std::ptr::null_mut(), pin_btn: std::ptr::null_mut(), history_btn: std::ptr::null_mut(), new_btn: std::ptr::null_mut(), mic_btn: std::ptr::null_mut(), tip: std::ptr::null_mut(), hot: std::ptr::null_mut(), spin: 0, small_font: std::ptr::null_mut(), t0: None, first_tok: None, out_chars: 0, tally: Default::default(), in_chars: 0, card_tw: 0, tried: Vec::new(), input_lines: 1, mem_undo: None, old_btn: 0, code_mark: 0, pill: RECT { left: 0, top: 0, right: 0, bottom: 0 },
             field_brush: CreateSolidBrush(th.code), icon_font: std::ptr::null_mut(), theme: th, visible: false, prev: std::ptr::null_mut(), old_input: 0, old_view: 0,
             bg_brush, font: std::ptr::null_mut(), hotkey_warning: String::new(),
         })), Ordering::Relaxed);

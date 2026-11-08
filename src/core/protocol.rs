@@ -7,6 +7,8 @@ pub enum Event {
     Text(String),
     /// What the model is doing before (or between) words: "Thinking", "Searching the web", ...
     Status(String),
+    /// Tokens a model call used (input, cached input and output), as the provider reported them.
+    Tokens(u64),
     Done,
     Error(String),
 }
@@ -49,7 +51,7 @@ pub fn build_request(f: ApiFormat, base: &str, model: &str, key: &str, msgs: &[M
             HttpRequest {
                 url: format!("{base}/chat/completions"),
                 headers,
-                body: json!({"model": model, "stream": true, "messages": messages}).to_string(),
+                body: json!({"model": model, "stream": true, "stream_options": {"include_usage": true}, "messages": messages}).to_string(),
             }
         }
         ApiFormat::Anthropic => {
@@ -74,12 +76,19 @@ pub fn parse_sse(f: ApiFormat, data: &str) -> Option<Event> {
     }
     match f {
         ApiFormat::OpenAi => {
+            if let Some(n) = v["usage"]["total_tokens"].as_u64() { return Some(Event::Tokens(n)); }
             let t = v["choices"][0]["delta"]["content"].as_str()?;
             (!t.is_empty()).then(|| Event::Text(t.to_string()))
         }
         ApiFormat::Anthropic => match v["type"].as_str()? {
             "content_block_delta" => v["delta"]["text"].as_str().map(|t| Event::Text(t.into())),
             "content_block_start" => block_status(&v["content_block"]),
+            // Input (cached included) at the start of a call, output at its end.
+            "message_start" => {
+                let u = &v["message"]["usage"];
+                Some(Event::Tokens(["input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"].iter().filter_map(|k| u[k].as_u64()).sum()))
+            }
+            "message_delta" => v["usage"]["output_tokens"].as_u64().map(Event::Tokens),
             "message_stop" => Some(Event::Done),
             _ => None,
         },
@@ -163,24 +172,6 @@ pub fn parse_claude_line(line: &str) -> Option<Event> {
     }
 }
 
-#[allow(dead_code)] // the one-shot `codex exec` format, kept for its tests
-pub fn parse_codex_line(line: &str) -> Option<Event> {
-    let v: Value = serde_json::from_str(line).ok()?;
-    match v["type"].as_str()? {
-        "item.completed" if v["item"]["type"] == "agent_message" => {
-            v["item"]["text"].as_str().map(|t| Event::Text(t.into()))
-        }
-        "turn.completed" => Some(Event::Done),
-        "turn.failed" => {
-            let m = v["error"]["message"].as_str().unwrap_or("Codex reported an error");
-            // Codex nests the service's JSON error inside the message string.
-            let inner = serde_json::from_str::<Value>(m).ok().and_then(|i| api_error(&i));
-            Some(Event::Error(inner.unwrap_or_else(|| m.to_string())))
-        }
-        _ => None,
-    }
-}
-
 /// Turns to send: drops a user message whose reply failed, so roles keep alternating
 /// (some providers reject two user messages in a row).
 pub fn request_turns(msgs: &[Msg]) -> Vec<Msg> {
@@ -235,11 +226,9 @@ mod tests {
         assert_eq!(parse_claude_line(r#"{"type":"result","is_error":false,"result":"pong"}"#), Some(Event::Done));
     }
     #[test]
-    fn codex_real_error_is_unwrapped() {
-        let l = r#"{"type":"turn.failed","error":{"message":"{\"type\":\"error\",\"status\":400,\"error\":{\"message\":\"model not supported\"}}"}}"#;
-        assert_eq!(parse_codex_line(l), Some(Event::Error("model not supported".into())));
-        // Non-fatal warning items must not be shown as replies.
-        assert_eq!(parse_codex_line(r#"{"type":"item.completed","item":{"type":"error","message":"w"}}"#), None);
+    fn usage_is_reported() {
+        assert_eq!(parse_sse(ApiFormat::OpenAi, r#"{"choices":[],"usage":{"prompt_tokens":9,"completion_tokens":3,"total_tokens":12}}"#), Some(Event::Tokens(12)));
+        assert_eq!(parse_sse(ApiFormat::Anthropic, r#"{"type":"message_delta","usage":{"output_tokens":7}}"#), Some(Event::Tokens(7)));
     }
     #[test]
     fn linebuf_handles_split_chunks_and_utf8() {

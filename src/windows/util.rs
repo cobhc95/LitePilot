@@ -72,6 +72,46 @@ pub fn hidden(cmd: &str) -> std::process::Command {
     c
 }
 
+/// Puts `child` in a job that ends it and everything it starts when the job is terminated or closed.
+pub fn job_for(child: &std::process::Child) -> windows_sys::Win32::Foundation::HANDLE {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::System::JobObjects::*;
+    unsafe {
+        let j = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+        let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        SetInformationJobObject(j, JobObjectExtendedLimitInformation, &info as *const _ as _, std::mem::size_of_val(&info) as u32);
+        AssignProcessToJobObject(j, child.as_raw_handle() as _);
+        j
+    }
+}
+
+/// Runs a hidden command and returns (stdout, stderr), each cut at 512 KB. After `secs` the whole process
+/// tree is killed and Err("timeout") comes back.
+pub fn run_for(mut c: std::process::Command, secs: u64) -> Result<(String, String), String> {
+    use std::io::Read;
+    use std::process::Stdio;
+    let mut child = c.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().map_err(|e| format!("could not start: {e}"))?;
+    let job = job_for(&child);
+    let read = |p: Option<Box<dyn Read + Send>>| std::thread::spawn(move || { let mut b = Vec::new(); if let Some(p) = p { let _ = p.take(512 * 1024).read_to_end(&mut b); } String::from_utf8_lossy(&b).into_owned() });
+    let (out, err) = (read(child.stdout.take().map(|p| Box::new(p) as _)), read(child.stderr.take().map(|p| Box::new(p) as _)));
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(secs);
+    let timed_out = loop {
+        match child.try_wait() {
+            Ok(None) if std::time::Instant::now() >= end => break true,
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(20)),
+            _ => break false,
+        }
+    };
+    unsafe {
+        windows_sys::Win32::System::JobObjects::TerminateJobObject(job, 1);
+        windows_sys::Win32::Foundation::CloseHandle(job);
+    }
+    let _ = child.wait();
+    let (out, err) = (out.join().unwrap_or_default(), err.join().unwrap_or_default());
+    if timed_out { Err("timeout".into()) } else { Ok((out, err)) }
+}
+
 pub fn set_autostart(on: bool) {
     if on { super::install::reg_set(RUN_KEY, "LitePilot", &format!("\"{}\" --background", exe_path().display())); }
     else { super::install::reg_delete_value(RUN_KEY, "LitePilot"); }

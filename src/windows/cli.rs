@@ -38,7 +38,7 @@ pub const SYSTEM: &str = "You are LitePilot, a concise desktop assistant. Answer
 This app CAN show pictures, so never say you cannot. To show one, put a Markdown image on its own line whose link is \
 wiki: followed by the exact title of an English Wikipedia article whose main photo fits, for example \
 ![Colchester Castle](wiki:Colchester Castle). The app fetches that photo itself, so you do not need to browse for it. \
-Use several lines for several pictures. A direct HTTPS link to an image file also works. \nYou have read-only tools to look at this computer (system overview, running processes, list a folder, read a text file). \nUse them when asked about this PC instead of handing the user a command; you have no shell and cannot change anything.";
+Use several lines for several pictures. A direct HTTPS link to an image file also works.";
 
 fn env_path(var: &str, rest: &str) -> PathBuf {
     PathBuf::from(std::env::var_os(var).unwrap_or_default()).join(rest)
@@ -223,7 +223,7 @@ pub fn sign_out(kind: &str) {
     }
 }
 
-pub use super::resident::{set_memory_tool, claude_memory_dir, configure, reset, run, stop, warm};
+pub use super::resident::{set_diag_tools, set_memory_tool, claude_memory_dir, configure, reset, run, stop, warm};
 
 #[cfg(test)]
 mod tests {

@@ -118,7 +118,7 @@ pub fn stream(req: &HttpRequest, f: ApiFormat, cancel: &HttpCancel, sink: &dyn F
                     if finished { return; }
                     if let Some(d) = l.strip_prefix("data:") {
                         if let Some(e) = parse_sse(f, d) {
-                            finished = !matches!(e, Event::Text(_) | Event::Status(_));
+                            finished = matches!(e, Event::Done | Event::Error(_));
                             sink(e);
                         }
                     }

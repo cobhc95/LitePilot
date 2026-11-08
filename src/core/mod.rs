@@ -3,6 +3,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub mod config;
 pub mod attach;
 pub mod backup;
+pub mod diag;
 pub mod history;
 pub mod keys;
 pub mod mcp;

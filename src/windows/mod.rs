@@ -4,6 +4,7 @@ mod chip_menu;
 mod tile_menu;
 mod cli;
 mod code;
+mod diag;
 mod actions_view;
 mod attach_win;
 mod backup_crypt;
@@ -16,7 +17,6 @@ mod install;
 mod memory_store;
 mod rtf;
 mod secrets;
-mod sysinfo;
 mod thumbs;
 mod tidy;
 mod settings;
@@ -39,9 +39,9 @@ pub fn run() {
         let dir = std::path::PathBuf::from(a.get(i + 1).cloned().unwrap_or_default());
         return memory_store::serve_mcp(&dir);
     }
-    // The read-only look-at-this-computer tool for the assistant: LitePilot.exe --system-mcp.
-    if a.iter().any(|x| x == "--system-mcp") {
-        return sysinfo::serve();
+    // The read-only diagnostic tools a message needs: LitePilot.exe --system-mcp sys,lang,...
+    if let Some(i) = a.iter().position(|x| x == "--system-mcp") {
+        return diag::serve(a.get(i + 1).map_or("", |s| s.as_str()));
     }
     if install::is_setup_exe() {
         return install::install();

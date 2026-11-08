@@ -2,7 +2,7 @@
 
 A tiny Windows popup for AI chat. Press a shortcut, ask, press Esc.
 
-_Version 0.1.19._
+_Version 0.1.20._
 
 <p>
   <img src="screenshots/chat.png" alt="A reply in the LitePilot popup" width="380">
@@ -16,8 +16,9 @@ _Version 0.1.19._
 - **Your accounts:** sign in with ChatGPT or Claude, or add any OpenAI-compatible or Anthropic API key. Switch account, model and effort with Ctrl+M, which also shows how much of your plan's 5-hour and weekly limits you have used.
 - **Remembers you:** say "remember that ..." and it keeps the fact for every future chat. See [Memory](#memory).
 - **Pictures and files:** paste, drop or attach (Ctrl+Shift+A) pictures, PDFs and text files. They show as small tiles in the typing box with an x to remove them, and as a thumbnail in the chat.
-- **Good-looking replies:** tables, code with Copy buttons, links, lists, right-to-left text and embedded images.
-- **Light on the PC:** about 0.7 MB on disk and about 9 to 14 MB of RAM with the window open. See [Performance](#performance).
+- **Good-looking replies:** tables, code with Copy buttons, links, lists, right-to-left text and embedded images. Under each reply: time, speed and total tokens (`6s · 154 tok/s · 1,842 tokens`).
+- **Knows your PC:** with a Claude or ChatGPT sign-in it can look things up on this computer, read-only. See [PC diagnostics](#pc-diagnostics).
+- **Light on the PC:** about 1.2 MB on disk and about 9 to 14 MB of RAM with the window open. See [Performance](#performance).
 
 ## Install
 
@@ -69,6 +70,28 @@ LitePilot keeps a short list of facts about you and uses them in every chat, on 
 - **Move them:** import facts from the clipboard, copy a ready-made prompt that asks another AI what it knows about you, or save a plain text file to Downloads. **Back up and move** exports settings, facts and Claude's own memory in one passphrase-encrypted file that opens on any PC. API keys and sign-ins are not included.
 - **Limits and sharing:** one shared list for every account, or a list per account.
 
+## PC diagnostics
+
+Ask things like "is the US keyboard installed?", "why is my PC slow?" or "what's using port 8080?" and the AI checks this computer itself (Claude and ChatGPT sign-in accounts).
+
+| Tool | Looks at |
+|---|---|
+| `sys` | Windows version, hardware, updates, pending reboot, activation, power plan, battery, displays, audio, printers |
+| `lang` | languages and keyboard layouts, locale, time zone, input method |
+| `disk` | drives, disk health, folder size, temp folders, largest files |
+| `proc` | top processes, process details, CPU/RAM/disk load, startup items, services, which process owns a port |
+| `net` | adapters, IP setup, ping, TCP connect test, DNS, listening ports, Wi-Fi, proxy, hosts file, firewall, routes |
+| `events` | recent errors, app crashes and hangs, blue screens, reliability, failed updates |
+| `sec` | Defender, UAC and Secure Boot, BitLocker, local users, administrators |
+| `apps` | installed programs, devices with problems, default apps, environment variables |
+| `file` | read a text file, list a folder, file info (Documents, Downloads, Desktop) |
+| `reg` | a few registry keys (installed programs, Run keys, Windows version, time zone, regional settings) |
+| `dev` | developer tool versions; git status, log and diff of a repo folder |
+
+- **Zero cost for normal chat:** a quick local check of your message decides which tools (if any) it needs. Ordinary chat sends no tools at all; a PC question sends only the one or two that fit.
+- **`/diag`:** start a message with `/diag` to give the AI every tool for that message, if the check missed what you meant.
+- **Safety:** read-only. Every choice runs one fixed query built into LitePilot; the AI can't run its own commands or scripts and only supplies checked values (a host name, a port, a path). No admin rights are ever requested ("requires elevation" comes back instead). Each query stops after 10 seconds. File access is limited to Documents, Downloads and Desktop, and never keys, passwords, browser or password-manager data. Passwords, tokens and keys are blanked out of every result, results are capped at 4 KB, and the AI is told that tool output is data, not instructions. Every call (never its output) is noted in `diag-audit.log` in LitePilot's data folder.
+
 ## Menus and settings
 
 <p>
@@ -99,6 +122,6 @@ python tools/e2e.py <empty-temp-folder> [--cli]
 
 ## Performance
 
-About 0.7 MB on disk, about 0.3 MB of RAM hidden in the tray, and about 9 to 14 MB with the window open. The
+About 1.2 MB on disk, about 0.3 MB of RAM hidden in the tray, and about 9 to 14 MB with the window open. The
 AI engine for sign-in accounts runs separately and is squeezed when idle. Measured numbers, settings, and how it is
 built are in [docs/PERFORMANCE.md](docs/PERFORMANCE.md).
