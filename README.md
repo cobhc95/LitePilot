@@ -51,6 +51,11 @@ The **global hook fallback** is also on by default and can be turned off separat
 
 ## Memory
 
+<p>
+  <img src="screenshots/memory-mode.png" alt="Chat memory settings" width="380">
+  <img src="screenshots/memory-list.png" alt="Your memories: search, delete, tidy up" width="380">
+</p>
+
 LitePilot keeps a short list of facts about you and uses them in every chat, on every account.
 
 - **Add and remove in chat:** "remember that I live in Colchester", "forget that ...". Ctrl+Shift+Z undoes the last change. Only you add memories, never the AI, and anything that looks like a password or key is refused.
@@ -65,10 +70,17 @@ LitePilot keeps a short list of facts about you and uses them in every chat, on 
 
 ## Menus and settings
 
+<p>
+  <img src="screenshots/menu.png" alt="The quick menu" width="380">
+  <img src="screenshots/history.png" alt="Previous chats" width="380">
+</p>
+
 The menu button opens quick actions (new chat, history, keep on top, copy, dictate, taskbar, settings, shortcuts). Ctrl+H lists previous chats with search.
 
 <p>
-  <img src="screenshots/settings.png" alt="Settings" width="380">
+  <img src="screenshots/settings.png" alt="Settings" width="250">
+  <img src="screenshots/appearance.png" alt="Appearance" width="250">
+  <img src="screenshots/keys.png" alt="Keyboard shortcuts" width="250">
 </p>
 
 Settings cover accounts and API keys, the shortcut and startup options, appearance (theme, colors, font, size, spacing), every keyboard shortcut, performance, memory, your data and backups. Dictation (Windows voice typing) is off until you turn it on.
