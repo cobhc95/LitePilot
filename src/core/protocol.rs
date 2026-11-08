@@ -7,6 +7,9 @@ pub enum Event {
     Text(String),
     /// What the model is doing before (or between) words: "Thinking", "Searching the web", ...
     Status(String),
+    /// What LitePilot itself is waiting on before the model's first step ("Starting Claude", "Waiting for
+    /// Claude"). Shown on the same single line, replaced by the next phase or the model's first real step.
+    Phase(String),
     /// Tokens a model call used (input, cached input and output), as the provider reported them.
     Tokens(u64),
     Done,

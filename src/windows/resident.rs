@@ -223,6 +223,7 @@ fn handshake(s: &mut Server) -> Result<(), String> {
 
 fn turn_claude(s: &mut Server, prompt: &str, media: &[PathBuf], sink: &dyn Fn(Event)) -> Option<String> {
     if !s.send(&attach::claude_line(prompt, media)) { sink(Event::Error(STOPPED.into())); return None; }
+    sink(Event::Phase("Waiting for Claude".into()));
     let mut reply = String::new();
     loop {
         let Some(l) = s.line() else { sink(Event::Error(STOPPED.into())); return None };
@@ -273,15 +274,30 @@ fn system_for(search: bool, standing: &str) -> String {
     base + tools + standing
 }
 
-/// Gets the CLI ready in the background (called when the window opens), so the first message doesn't wait
-/// for it to start. Does nothing if one is already running or a reply is in progress.
-pub fn warm(kind: &str, model: &str, effort: &str, search: bool, memory: &str, engine: bool, cwd: &Path) {
+/// Gets the CLI ready in the background, so a first message doesn't wait for it to start (about 0.5 s for
+/// Claude, up to 2 s for a Codex conversation). Called at launch, when the window opens and after each reply.
+/// It never throws away a conversation in progress: a running CLI that holds one is left alone, unless `fresh`
+/// (a new or different chat was opened), when a clean one is made ready for it. Does nothing during a reply.
+#[allow(clippy::too_many_arguments)]
+pub fn warm(kind: &str, model: &str, effort: &str, search: bool, memory: &str, engine: bool, cwd: &Path, fresh: bool) {
     if super::cli::find(kind).is_none() { return; }
     let (kind, model, effort, memory, cwd) = (kind.to_string(), model.to_string(), effort.to_string(), memory.to_string(), cwd.to_path_buf());
     std::thread::spawn(move || {
         let Ok(mut g) = SERVER.try_lock() else { return };
         let cfg = cfg_key(&kind, &model, &effort, search, &memory, engine);
-        if g.as_ref().is_some_and(|s| s.kind == kind && s.cfg == cfg) { return; }
+        if let Some(s) = g.as_mut() {
+            let same = s.kind == kind && s.cfg == cfg;
+            let busy = s.known.0 != 0;
+            if !fresh && (same || busy) { return; }
+            if same && !busy && (kind == "claude" || s.thread.is_some()) { return; }
+            // Codex: same process, just a new conversation made ready now instead of at the first message.
+            if same && kind == "codex" {
+                s.thread = None;
+                s.known = (0, rpc::hash(&[]));
+                if ensure_thread(s, &cwd, &system_for(search, &memory)).is_err() { if let Some(s) = g.take() { s.kill(); } }
+                return;
+            }
+        }
         if let Some(s) = g.take() { s.kill(); }
         let Some(mut s) = spawn(&kind, &model, &effort, search, &memory, engine, &cwd, cfg) else { return };
         if kind == "codex" && (handshake(&mut s).is_err() || ensure_thread(&mut s, &cwd, &system_for(search, &memory)).is_err()) { s.kill(); return; }
@@ -289,6 +305,8 @@ pub fn warm(kind: &str, model: &str, effort: &str, search: bool, memory: &str, e
         start_reaper();
     });
 }
+
+fn engine_name(kind: &str) -> &'static str { if kind == "claude" { "Claude" } else { "ChatGPT" } }
 
 #[allow(clippy::too_many_arguments)]
 fn turn_codex(s: &mut Server, model: &str, effort: &str, prompt: &str, media: &[PathBuf], cwd: &Path, system: &str, sink: &dyn Fn(Event)) -> Option<String> {
@@ -304,6 +322,7 @@ fn turn_codex(s: &mut Server, model: &str, effort: &str, prompt: &str, media: &[
     s.next_id += 1;
     let id = s.next_id;
     if !s.send(&rpc::request(id, "turn/start", params)) { return fail(STOPPED.into()); }
+    sink(Event::Phase("Waiting for ChatGPT".into()));
     let (mut reply, mut last_err) = (String::new(), None);
     loop {
         let Some(l) = s.line() else { return fail(STOPPED.into()) };
@@ -335,6 +354,7 @@ pub fn run(kind: &str, model: &str, effort: &str, search: bool, memory: &str, en
     let stale = g.as_ref().is_some_and(|s| s.kind != kind || s.cfg != cfg || (kind == "claude" && !in_sync(s) && s.known.0 != 0));
     if stale { if let Some(s) = g.take() { s.kill(); } }
     if g.is_none() {
+        sink(Event::Phase(format!("Starting {}", engine_name(kind))));
         let Some(mut s) = spawn(kind, model, effort, search, memory, engine, cwd, cfg) else { return sink(Event::Error("Could not start the CLI.".into())) };
         if kind == "codex" {
             if let Err(e) = handshake(&mut s) { s.kill(); return sink(Event::Error(e)); }
@@ -345,7 +365,9 @@ pub fn run(kind: &str, model: &str, effort: &str, search: bool, memory: &str, en
     let s = g.as_mut().unwrap();
     s.trimmed = false;
     let sync = in_sync(s) && (kind == "claude" || s.thread.is_some());
-    if !sync { s.thread = None; }
+    // A conversation made ready by `warm` and not used yet takes the whole chat as its first message.
+    if !sync && s.known.0 != 0 { s.thread = None; }
+    if kind == "codex" && s.thread.is_none() { sink(Event::Phase("Starting a conversation".into())); }
     let prompt = format!("{}{extra}", if sync { last.text.clone() } else { flatten_prompt(turns) });
     let system = system_for(search, memory);
     let reply = if kind == "claude" { turn_claude(s, &prompt, media, sink) } else { turn_codex(s, model, effort, &prompt, media, cwd, &system, sink) };

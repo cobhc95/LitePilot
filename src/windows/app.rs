@@ -679,12 +679,28 @@ fn status_showing(a: &App) -> bool {
 }
 
 
-/// A new step from the model. A real first step replaces the guess shown while waiting for it.
+thread_local! {
+    /// True while the one status line shows LitePilot's own wait (a phase), not a step the model took.
+    static IN_PHASE: Cell<bool> = const { Cell::new(false) };
+}
+
+/// LitePilot's own wait before the model's first step: replaces the single line in place, never adds one.
+fn set_phase(a: &mut App, label: String) {
+    if !IN_PHASE.get() || a.steps.len() != 1 || a.steps[0].0 == label { return; }
+    a.steps[0] = (label, std::time::Instant::now());
+    a.dirty = true;
+}
+
+/// A new step from the model. Its first real step replaces the phase line; later steps are added below.
 fn add_step(a: &mut App, label: String) {
     if !a.msgs.last().is_some_and(|m| m.text.is_empty()) { return; }
+    if IN_PHASE.replace(false) && a.steps.len() == 1 {
+        a.steps[0] = (label, std::time::Instant::now());
+        a.dirty = true;
+        return;
+    }
     if a.steps.last().is_some_and(|(l, _)| *l == label) { return; }
-    let guess = a.steps.len() == 1 && a.t0.is_some_and(|t| t.elapsed().as_millis() < 900);
-    if guess { a.steps[0].0 = label; } else { a.steps.push((label, std::time::Instant::now())); }
+    a.steps.push((label, std::time::Instant::now()));
     a.dirty = true;
 }
 
@@ -705,8 +721,9 @@ fn render_tail() {
     a.dirty = false;
 }
 
-/// Starts the chat engine in the background when the window opens, if the setting is on.
-fn warm_engine() {
+/// Keeps the chat engine ready in the background (if the setting is on): started at launch, checked when the
+/// window opens and after every reply, and made fresh when another chat is opened. See resident::warm.
+pub fn warm_engine(fresh: bool) {
     let a = app();
     let p = a.cfg.active_profile();
     if !a.cfg.prewarm || !p.is_login() { return; }
@@ -716,7 +733,7 @@ fn warm_engine() {
     memory_store::adopt_claude_memory(&a.data, &mem_dir());
     // Warmed exactly as a fresh chat's first ordinary message will need it: no tools, no facts.
     let standing = super::turn_plan::warm(mode, a.cfg.web_search, &mem_dir());
-    cli::warm(&p.kind, &p.model, &p.effort, false, &standing, mode == "engine", &cwd);
+    cli::warm(&p.kind, &p.model, &p.effort, false, &standing, mode == "engine", &cwd, fresh);
 }
 
 /// A window focus can be handed back to: another program's visible, normal (not minimized) top-level window,
@@ -776,7 +793,7 @@ pub fn show() {
             SetFocus(a.settings);
         } else { SetForegroundWindow(a.hwnd); SetFocus(a.input); }
     }
-    warm_engine();
+    warm_engine(false);
 }
 
 pub fn hide() {
@@ -832,7 +849,9 @@ fn send() {
     let req_msgs = request_turns(&a.msgs);
     a.msgs.push(Msg::new("assistant", ""));
     a.streaming = true;
-    a.steps = vec![("Thinking".into(), std::time::Instant::now())];
+    // Until the engine or the model says otherwise, the honest label is that the reply is on its way.
+    a.steps = vec![("Sending".into(), std::time::Instant::now())];
+    IN_PHASE.set(true);
     a.gen += 1;
     render_view(Scroll::QuestionTop);
     unsafe { SetTimer(a.hwnd, ID_RENDER, 33, None); }
@@ -879,6 +898,7 @@ fn send() {
             let mut mem = memory_store::block_for(&mem_dir, mode);
             mem += &memory_store::relevant_for(&mem_dir, mode, &last_user);
             let r = build_request(f, &p.base_url, &p.model, &secrets::get(&p.id), &req_msgs, &att, &mem);
+            sink(Event::Phase("Waiting for reply".into()));
             http::stream(&r, f, &cancel.http, &sink);
         }
     });
@@ -916,6 +936,8 @@ fn finish(a: &mut App) {
     }
     // Last: a note is a message too, and it must not land after the reply before the reply is saved.
     if !saved.is_empty() { note(format!("Remembered: {}", saved.join("; "))); }
+    // A stopped or failed reply ends the engine; have the next one ready before the next message.
+    warm_engine(false);
     if !a.visible {
         a.msgs = Vec::new();
         a.loaded = false;
@@ -984,6 +1006,7 @@ fn on_event(gen: u64, e: Event) {
             a.dirty = true;
         }
         Event::Status(t) => add_step(a, t),
+        Event::Phase(t) => set_phase(a, t),
         Event::Tokens(n) => a.tally.add(n),
         Event::Done => { a.tried.clear(); finish(a) }
         Event::Error(t) => {
@@ -1029,6 +1052,8 @@ fn open_chat(path: PathBuf) {
     a.msgs = history::load(&a.chat);
     a.loaded = true;
     render_all();
+    // Another chat: a clean engine (Claude) or conversation (Codex) is made ready now, not at its first message.
+    warm_engine(true);
 }
 
 fn step_history(delta: i32) {
@@ -1074,7 +1099,7 @@ pub fn memory_changed(done: String) {
         _ => "",
     };
     note(format!("{done}.{undo}{off}"));
-    warm_engine();
+    warm_engine(false);
 }
 
 /// Settings changed the list itself, so an older undo would bring back something the user just edited.
@@ -1413,7 +1438,9 @@ pub fn run(show_now: bool) {
         // First run greets with the sign-in choices; a taken shortcut needs attention too.
         let first_run = !a.data.join("config.json").exists();
         if first_run { save_config(); }
-        if show_now { show(); }
+        // The engine starts with LitePilot (hidden or not) and stays running, so even the first message after
+        // a restart of Windows doesn't wait for it.
+        if show_now { show(); } else { warm_engine(false); }
         if first_run || !a.hotkey_warning.is_empty() { settings::open(); }
         // Startup work is finished; give back pages until the first use.
         SetProcessWorkingSetSize(GetCurrentProcess(), usize::MAX, usize::MAX);
