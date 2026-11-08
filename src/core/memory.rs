@@ -167,10 +167,12 @@ pub fn stems(s: &str) -> Vec<String> {
     out
 }
 
-/// True when two stems are the same word, one starts the other (four or more letters), or they differ by a typo.
+/// True when two stems are the same word, one is the other with a short ending (four or more letters, at most two
+/// more: "spec" and "specs", not "spec" and "specialty"), or they differ by a typo.
 pub fn near(a: &str, b: &str) -> bool {
     if a == b { return true; }
-    if a.len() >= 4 && b.len() >= 4 && (a.starts_with(b) || b.starts_with(a)) { return true; }
+    let (short, long) = if a.len() <= b.len() { (a, b) } else { (b, a) };
+    if short.len() >= 4 && long.len() <= short.len() + 2 && long.starts_with(short) { return true; }
     if a.len() < 5 || b.len() < 5 || a.len().abs_diff(b.len()) > 1 { return false; }
     // One substitution, insertion or deletion.
     let (x, y): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
@@ -188,29 +190,131 @@ fn is_personal(lower: &str) -> bool {
     lower.split(|c: char| !c.is_alphanumeric() && c != '\'').any(|x| matches!(x, "my" | "me" | "mine" | "i" | "i'm" | "im" | "we" | "our" | "myself" | "remember"))
 }
 
+/// Common other names for everyday things ("gpu" for "graphics card"), general knowledge rather than anyone's own
+/// facts. Each key (a stem) brings the words after it into the search at a little less than full weight. Anything
+/// subtler is left to the model, which can search with its own words (see core::need::Ask::Memory).
+const SYNONYMS: &[(&str, &[&str])] = &[
+    ("gpu", &["graphic", "radeon", "geforce", "rtx", "nvidia", "arc"]),
+    ("graphic", &["gpu", "radeon", "geforce", "rtx"]),
+    ("cpu", &["processor", "ryzen", "intel", "core", "threadripper", "xeon"]),
+    ("processor", &["cpu", "ryzen", "intel"]),
+    ("ram", &["memory", "ddr4", "ddr5", "gb"]),
+    ("storage", &["ssd", "hdd", "nvme", "tb", "drive", "disk"]),
+    ("spec", &["cpu", "gpu", "ram", "storage", "motherboard", "processor", "graphic", "ssd", "tb"]),
+    ("specification", &["cpu", "gpu", "ram", "storage", "motherboard"]),
+    ("pc", &["desktop", "computer", "laptop", "rig"]),
+    ("computer", &["desktop", "pc", "laptop"]),
+    ("rig", &["desktop", "pc"]),
+    ("job", &["work", "employer", "career", "profession", "occupation", "role"]),
+    ("work", &["job", "employer", "career", "profession", "occupation"]),
+    ("career", &["job", "profession", "training"]),
+    ("live", &["home", "city", "town", "country", "address", "based"]),
+    ("home", &["live", "house", "flat", "city"]),
+    ("car", &["vehicle", "drive", "model"]),
+    ("phone", &["iphone", "android", "pixel", "galaxy", "mobile"]),
+    ("hobby", &["enjoy", "like", "love", "play", "interest"]),
+    ("family", &["wife", "husband", "partner", "son", "daughter", "kid", "child", "brother", "sister", "mother", "father"]),
+];
+
+/// The things a message says the user owns or is talking about as theirs: the word or two after "my" ("my desktop",
+/// "my gaming pc"), as stems.
+fn owned(lower: &str) -> Vec<String> {
+    let words: Vec<&str> = lower.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).collect();
+    let mut out = Vec::new();
+    for (i, w) in words.iter().enumerate() {
+        if matches!(*w, "my" | "our") {
+            for x in words.iter().skip(i + 1).take(2) { out.extend(stems(x)); }
+        }
+    }
+    out
+}
+
+/// What a fact is about, when it is about something of the user's: the words after "your", or after "you own a",
+/// "you have a", "you use a" ("Your desktop uses..." is about "desktop"). Up to four words, stems.
+fn subject(fact: &str) -> Vec<String> {
+    let l = fact.to_lowercase();
+    for lead in ["your ", "you own an ", "you own a ", "you own ", "you have an ", "you have a ", "you use an ", "you use a ", "you drive a ", "you drive an "] {
+        if let Some(i) = l.find(lead) {
+            let rest: String = l[i + lead.len()..].chars().take_while(|c| !".,;:(".contains(*c)).collect();
+            let words: Vec<&str> = rest.split_whitespace().collect();
+            // "your desktop uses ..." names the thing first; "you own a small-form-factor desktop" names it last.
+            let take: Vec<&str> = if lead == "your " { words.into_iter().take(2).collect() } else { words.into_iter().take(4).collect() };
+            return stems(&take.join(" "));
+        }
+    }
+    vec![]
+}
+
+/// A fact that records something the user once did ("You have investigated X", "You have worked on Y",
+/// "Discussed Z on 3 May") rather than how things stand ("You work as...", "Your desktop uses...").
+fn is_history(fact: &str) -> bool {
+    let l = fact.trim().to_lowercase();
+    let rest = l.strip_prefix("you have ").or_else(|| l.strip_prefix("you've ")).or_else(|| l.strip_prefix("user has "));
+    match rest {
+        Some(r) => { let w = r.split_whitespace().next().unwrap_or(""); w.ends_with("ed") || matches!(w, "been" | "done" | "made" | "built" | "seen" | "tried" | "held" | "taken" | "written" | "had") }
+        None => l.split_whitespace().next().is_some_and(|w| w.ends_with("ed") && w.len() > 4),
+    }
+}
+
+/// Every fact that relates to the message, best first (index and score). See `recall`.
+pub fn ranked(list: &[String], message: &str) -> Vec<(f64, usize)> { recall(list, message, &[]) }
+
 /// Every fact that relates to the message, best first (index and score). Scoring: each message word is matched
-/// exactly, by prefix or typo (full weight) or through a shared idea (partial weight); rarer words count for
-/// more, and newer facts win ties. Personal questions with no match get the newest few facts.
-pub fn ranked(list: &[String], message: &str) -> Vec<(f64, usize)> {
+/// exactly, by a short ending or typo (full weight) or through a shared idea (partial weight); rarer words count
+/// for more. Something the user calls theirs ("my desktop") strongly favours facts about it ("Your desktop..."),
+/// and when one such fact matches, the others about the same thing come along, so a question gets the whole set.
+/// `context` (the previous messages in the chat) counts at a lower weight, so "it's in your memory" follows the
+/// topic. Newer facts win ties. Personal questions with no match get the newest few facts.
+pub fn recall(list: &[String], message: &str, context: &[&str]) -> Vec<(f64, usize)> {
     if list.is_empty() { return vec![]; }
-    let msg = stems(message);
     let lower = message.to_lowercase();
     let about_me = ["remember", "know about me", "about me", "who am i", "what do you know", "my name", "do you know me", "tell me about myself"].iter().any(|k| lower.contains(k));
     let personal = about_me || is_personal(&lower);
-    if msg.is_empty() && !about_me { return vec![]; }
+    // Words with their weight: this message in full, the earlier ones lightly.
+    let mut words: Vec<(String, f64)> = stems(message).into_iter().map(|w| (w, 1.0)).collect();
+    // Other words for the same thing, a little lighter.
+    let syn: Vec<String> = words.iter().flat_map(|(w, _)| SYNONYMS.iter().filter(|(k, _)| near(k, w)).flat_map(|(_, v)| v.iter().map(|s| s.to_string()))).collect();
+    for s in syn { if !words.iter().any(|(x, _)| *x == s) { words.push((s, 0.8)); } }
+    // "what gpu do I have", "my desktop": a question about the user's own things favours facts about them.
+    let possessive = ["my ", "do i have", "i have", "do i own", "i own", "do i use", "i use", "have i got", "i've got", "ive got"].iter().any(|k| lower.contains(k));
+    // "what do I do", "where do I live", "who am I": about the user now, so standing facts ("You work as a doctor")
+    // beat a history of things they once did ("You have worked on...", "You have investigated..."). A question about
+    // the past ("what have I worked on", "did I ...") keeps them level.
+    let about_now = [" do i ", " am i ", " i do ", "what is my", "what's my", "whats my", "who am i", " do i?"].iter().any(|k| format!(" {lower} ").contains(k))
+        && ![" have i ", " did i ", " was i ", " used to "].iter().any(|k| format!(" {lower} ").contains(k));
+    let mut mine = owned(&lower);
+    for c in context {
+        for w in stems(c) { if !words.iter().any(|(x, _)| *x == w) { words.push((w, 0.4)); } }
+        for w in owned(&c.to_lowercase()) { if !mine.contains(&w) { mine.push(w); } }
+    }
+    if words.is_empty() && !about_me { return vec![]; }
     let facts: Vec<Vec<String>> = list.iter().map(|f| stems(f)).collect();
+    let subjects: Vec<Vec<String>> = list.iter().map(|f| subject(f)).collect();
     let fact_ideas: Vec<Vec<usize>> = facts.iter().map(|f| ideas_of(f)).collect();
     let n = list.len() as f64;
-    // Which facts contain each message word, worked out once (one pass per word, not one per word per fact),
-    // and from that the rarity weight of each word.
-    let hits: Vec<Vec<bool>> = msg.iter().map(|w| facts.iter().map(|f| f.iter().any(|x| near(x, w))).collect()).collect();
+    // Which facts contain each word, worked out once, and from that the rarity weight of each word.
+    let hits: Vec<Vec<bool>> = words.iter().map(|(w, _)| facts.iter().map(|f| f.iter().any(|x| near(x, w))).collect()).collect();
     let idf: Vec<f64> = hits.iter().map(|h| (1.0 + n / (h.iter().filter(|x| **x).count() as f64 + 0.5)).ln()).collect();
-    let msg_ideas = ideas_of(&msg);
+    let msg_only: Vec<String> = words.iter().filter(|(_, wt)| *wt >= 1.0).map(|(w, _)| w.clone()).collect();
+    let msg_ideas = ideas_of(&msg_only);
+    let mut score = vec![0.0f64; list.len()];
+    for (i, s) in score.iter_mut().enumerate() {
+        for (k, h) in hits.iter().enumerate() { if h[i] { *s += idf[k] * words[k].1; } }
+        for id in &msg_ideas { if fact_ideas[i].contains(id) { *s += 1.2; } }
+        // About the very thing the user calls theirs.
+        if !mine.is_empty() && subjects[i].iter().any(|s| mine.iter().any(|m| near(m, s))) { *s += 6.0; }
+        // About something of theirs at all ("Your desktop uses..."), for a question about what they have.
+        else if possessive && *s > 0.0 && !subjects[i].is_empty() { *s *= 1.5; }
+        if about_now && is_history(&list[i]) { *s *= 0.5; }
+    }
+    // The rest of a matched thing's facts come along: everything with the same subject as a strong match.
+    let strong: Vec<usize> = (0..list.len()).filter(|&i| score[i] >= 6.0 && !subjects[i].is_empty()).collect();
+    for i in 0..list.len() {
+        if score[i] >= 6.0 || subjects[i].is_empty() { continue; }
+        if strong.iter().any(|&j| subjects[j].first() == subjects[i].first()) { score[i] = score[i].max(6.0); }
+    }
     let mut scored: Vec<(f64, usize)> = Vec::new();
-    for (i, _) in facts.iter().enumerate() {
-        let mut sc = 0.0;
-        for (k, h) in hits.iter().enumerate() { if h[i] { sc += idf[k]; } }
-        for id in &msg_ideas { if fact_ideas[i].contains(id) { sc += 1.2; } }
+    for (i, mut sc) in score.into_iter().enumerate() {
         if sc > 0.0 { sc += 0.3 * (i as f64 + 1.0) / n; } // newer wins ties
         else if about_me { sc = 0.1 + (i as f64) / n; }
         if sc > 0.0 { scored.push((sc, i)); }
@@ -242,15 +346,22 @@ const PER_MESSAGE: usize = 8;
 const PER_MESSAGE_CHARS: usize = 1200;
 
 /// The facts that relate to this message, best first, for a list of any size: nothing when no fact relates, so
-/// ordinary chat carries none. Sent with the message itself, never in the standing instructions.
-pub fn for_message(list: &[String], message: &str) -> String {
-    pick(list, ranked(list, message).into_iter().map(|(_, i)| i), PER_MESSAGE, PER_MESSAGE_CHARS)
+/// ordinary chat carries none. Sent with the message itself, never in the standing instructions. A personal
+/// question ("my desktop", "what do you know about me") gets room for a whole set of facts (about 500 tokens);
+/// anything else a few (about 300). `context`: the chat's previous messages.
+pub fn for_message(list: &[String], message: &str, context: &[&str]) -> String {
+    let lower = message.to_lowercase();
+    let personal = is_personal(&lower) || !owned(&lower).is_empty();
+    let (most, chars) = if personal { (PER_MESSAGE * 2, BUDGET) } else { (PER_MESSAGE, PER_MESSAGE_CHARS) };
+    // Only clear matches: a word or idea in common, not the newest-facts fallback.
+    let hits = recall(list, message, context).into_iter().filter(|(s, _)| *s >= 1.0).map(|(_, i)| i);
+    pick(list, hits, most, chars)
 }
 
 /// When the model asked for the saved facts: the related ones first, then the newest, within the full budget.
-pub fn on_request(list: &[String], message: &str) -> String {
-    let order = ranked(list, message).into_iter().map(|(_, i)| i).chain((0..list.len()).rev());
-    pick(list, order, usize::MAX, BUDGET)
+pub fn on_request(list: &[String], message: &str, context: &[&str]) -> String {
+    let order = recall(list, message, context).into_iter().map(|(_, i)| i).chain((0..list.len()).rev());
+    pick(list, order, usize::MAX, BUDGET * 2)
 }
 
 fn pick(list: &[String], order: impl Iterator<Item = usize>, most: usize, chars: usize) -> String {
@@ -297,16 +408,24 @@ pub fn from_json(s: &str) -> Vec<String> {
     serde_json::from_str::<Vec<String>>(s).unwrap_or_default().into_iter().filter(|x| !x.trim().is_empty()).collect()
 }
 
-/// The save lines a ChatGPT reply can end with, `[[remember: fact]]`, one per line. Returns the reply without them
-/// and the facts they ask for. Only whole lines count, so a marker quoted inside a sentence stays put.
+/// The save tags a reply can carry, `[[remember: fact]]`, usually on their own lines at the end but sometimes at the
+/// end of a sentence. Returns the reply without them and the facts they ask for. Tags inside code (a line starting
+/// with spaces or a backtick block) are left alone.
 pub fn split_remember(text: &str) -> (String, Vec<String>) {
-    let mut kept: Vec<&str> = Vec::new();
+    let mut kept: Vec<String> = Vec::new();
     let mut facts = Vec::new();
+    let mut in_code = false;
     for line in text.lines() {
-        match line.trim().strip_prefix("[[remember:").and_then(|r| r.strip_suffix("]]")) {
-            Some(f) => { if !f.trim().is_empty() { facts.push(f.trim().to_string()); } }
-            None => kept.push(line),
+        if line.trim_start().starts_with("```") { in_code = !in_code; }
+        if in_code || line.starts_with("    ") { kept.push(line.to_string()); continue; }
+        let mut rest = line.to_string();
+        while let Some(i) = rest.find("[[remember:") {
+            let Some(j) = rest[i..].find("]]") else { break };
+            let f = rest[i + 11..i + j].trim().to_string();
+            if !f.is_empty() { facts.push(f); }
+            rest = format!("{}{}", rest[..i].trim_end(), &rest[i + j + 2..]);
         }
+        if !(rest.trim().is_empty() && !line.trim().is_empty()) { kept.push(rest); }
     }
     (kept.join("\n").trim_end().to_string(), facts)
 }
@@ -324,8 +443,11 @@ mod tests {
         let (text, facts) = split_remember("Noted.\n[[remember: I live in Colchester]]\n[[remember: ]]");
         assert_eq!(text, "Noted.");
         assert_eq!(facts, vec!["I live in Colchester".to_string()]);
-        let (text, facts) = split_remember("Use [[remember: x]] inline.");
-        assert_eq!(text, "Use [[remember: x]] inline.");
+        let (text, facts) = split_remember("Nice—enjoy it. [[remember: Bought a 27-inch 4K monitor on 8 November 2026]]");
+        assert_eq!(text, "Nice—enjoy it.");
+        assert_eq!(facts, vec!["Bought a 27-inch 4K monitor on 8 November 2026".to_string()]);
+        let (text, facts) = split_remember("```\n[[remember: x]]\n```");
+        assert_eq!(text, "```\n[[remember: x]]\n```");
         assert!(facts.is_empty());
     }
 
@@ -402,12 +524,35 @@ mod tests {
     #[test]
     fn sends_only_related_facts_per_message() {
         let l: Vec<String> = vec!["Lives in Leeds".into(), "Has a Ryzen 7 9700X desktop".into(), "Likes tea".into()];
-        assert_eq!(for_message(&l, "hi"), "");
-        assert_eq!(for_message(&l, "explain how rainbows form"), "");
-        let b = for_message(&l, "what are my pc specs");
+        assert_eq!(for_message(&l, "hi", &[]), "");
+        assert_eq!(for_message(&l, "explain how rainbows form", &[]), "");
+        let b = for_message(&l, "what are my pc specs", &[]);
         assert!(b.contains("Ryzen") && !b.contains("Leeds"), "{b}");
-        let all = on_request(&l, "anything");
+        let all = on_request(&l, "anything", &[]);
         assert!(all.contains("Leeds") && all.contains("tea") && all.contains("Ryzen"));
+    }
+
+    #[test]
+    fn my_thing_brings_all_its_facts_and_follows_the_chat() {
+        let mut l: Vec<String> = (0..300).map(|i| format!("You have investigated topic number {i} in detail")).collect();
+        l.extend(["You own a small-form-factor desktop.", "Your desktop uses an AMD Ryzen 7 9700X.", "Your desktop uses an AMD Radeon RX 9070 graphics card.",
+            "Your desktop has approximately 14 TB of storage.", "You prefer retaining Remote Desktop.", "You have investigated desktop AI integration.",
+            "You value specificity over generic recommendations.", "You have explored histopathology as a second specialty."].map(String::from));
+        let b = for_message(&l, "How does it compare with my desktop", &[]);
+        assert!(b.contains("Ryzen") && b.contains("RX 9070") && b.contains("14 TB") && b.contains("small-form-factor"), "{b}");
+        let first: Vec<&str> = b.lines().skip(1).take(4).collect();
+        assert!(first.iter().all(|f| !f.contains("Remote Desktop") && !f.contains("desktop AI")), "{b}");
+        let s = for_message(&l, "what are my desktop specs", &[]);
+        assert!(s.contains("Ryzen") && !s.contains("specialty") && !s.contains("specificity"), "{s}");
+        let mut w = l.clone();
+        w.extend(["You have worked on tab rendering.", "You have worked on glow effects.", "You work as a doctor.", "You have worked on playback."].map(String::from));
+        let j = for_message(&w, "what do I do for work", &[]);
+        assert!(j.lines().find(|l| l.starts_with("- ")).is_some_and(|f| f.contains("doctor")), "{j}");
+        let g = for_message(&l, "what gpu do I have", &[]);
+        assert!(g.lines().find(|l| l.starts_with("- ")).is_some_and(|f| f.contains("RX 9070")), "{g}");
+        // A follow-up with no topic of its own keeps the chat's topic.
+        let f = for_message(&l, "it's in your memories", &["How does it compare with my desktop"]);
+        assert!(f.contains("Ryzen") && f.contains("14 TB"), "{f}");
     }
 
     #[test]

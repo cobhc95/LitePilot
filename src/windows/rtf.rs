@@ -10,7 +10,7 @@ fn rgb(c: u32) -> String {
 
 /// RichEdit draws all text in a table cell white when the cell's shading is dark (HSL lightness about 50/255
 /// or lower), which wipes out syntax colors. Lifts a shading color evenly until it is just past that point.
-fn cell_shade(c: u32) -> u32 {
+pub fn cell_shade(c: u32) -> u32 {
     const MIN_L: u32 = 56;
     let ch = [c & 255, (c >> 8) & 255, (c >> 16) & 255];
     let l = (ch.iter().max().unwrap() + ch.iter().min().unwrap()) / 2;

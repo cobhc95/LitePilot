@@ -30,18 +30,19 @@ pub fn mark_search(chat: &str) { *STICKY.lock().unwrap_or_else(|e| e.into_inner(
 
 fn users(turns: &[Msg]) -> impl Iterator<Item = &str> { turns.iter().filter(|m| m.role == "user").map(|m| m.text.as_str()) }
 
-/// The standing lines for this chat: ask for search while it's off but allowed, ask for memory while facts exist.
-fn standing(search_allowed: bool, search: bool, has_facts: bool) -> String {
+/// The standing lines for this chat: ask for search while it's off but allowed, ask for memory while facts exist
+/// (or past chats could hold the answer), and save what's worth keeping while memory is on.
+fn standing(search_allowed: bool, search: bool, memory_on: bool) -> String {
     let mut s = String::new();
     if search_allowed && !search { s += need::ESCALATE_SEARCH; }
-    if has_facts { s += need::ESCALATE_MEMORY; }
+    if memory_on { s += need::ESCALATE_MEMORY; s += need::SAVE_RULE; }
     s
 }
 
 /// Sets the CLI's tools for this message and works out what goes with it. `asked` is set when the model has just
 /// asked for something, and the message is being sent again.
 #[allow(clippy::too_many_arguments)]
-pub fn plan(kind: &str, mode: &str, search_allowed: bool, chat: &str, turns: &[Msg], last: &str, mem_dir: &Path, asked: Option<Ask>) -> Plan {
+pub fn plan(kind: &str, mode: &str, search_allowed: bool, chat: &str, turns: &[Msg], last: &str, mem_dir: &Path, asked: Option<&Ask>) -> Plan {
     let list = if mode == "off" { vec![] } else { memory_store::load(mem_dir) };
     // Sticky per chat: any message in it that needed search (or a model that asked) keeps search on.
     let search = search_allowed && (sticky_search(chat) || users(turns).any(need::search));
@@ -49,26 +50,73 @@ pub fn plan(kind: &str, mode: &str, search_allowed: bool, chat: &str, turns: &[M
     let mut cats: Vec<&'static str> = Vec::new();
     for u in users(turns) { for c in diag::route(u) { if !cats.contains(&c) { cats.push(c); } } }
     cli::set_diag_tools(cats);
-    // The lookup tool only for a list too big to attach, when this message is about the user or the model asked.
-    let tool = !list.is_empty() && !memory::fits(&list) && (need::about_memory(last) || asked == Some(Ask::Memory));
-    cli::set_memory_tool(mem_dir, tool);
+    // No lookup tool: the model asks with [[memory: its own search words]] instead, which costs nothing when unused.
+    cli::set_memory_tool(mem_dir, false);
 
+    // The chat's previous questions (the two before this one): a follow-up like "it's in your memory" keeps their topic.
+    let earlier: Vec<&str> = users(turns).collect();
+    let mut context: Vec<&str> = earlier.iter().rev().skip(1).take(2).copied().collect();
     let mut extra = String::new();
     let facts = match asked {
-        Some(Ask::Memory) => memory::on_request(&list, last),
-        _ if need::memory(last) => memory::for_message(&list, last),
+        // The model's own words lead; the message and the chat's topic follow at a lower weight.
+        Some(Ask::Memory(q)) if !q.is_empty() => { context.insert(0, last); memory::on_request(&list, q, &context) }
+        Some(Ask::Memory(_)) => memory::on_request(&list, last, &context),
+        _ if need::memory(last) || need::about_memory(last) => memory::for_message(&list, last, &context),
         _ => String::new(),
     };
     if !facts.is_empty() {
         extra += &facts;
         if search { extra += cli::ORDER; }
     }
-    if mode != "off" && need::states_fact(last) { extra += cli::SAVE; }
+    // Earlier chats: what the user asked before, for "what did I ask last time", or when the model asked.
+    let asked_memory = matches!(asked, Some(Ask::Memory(_)));
+    if mode != "off" && (need::about_past(last) || asked_memory) {
+        let q = match asked { Some(Ask::Memory(q)) if !q.is_empty() => q.as_str(), _ => last };
+        extra += &past_questions(chat, q, &context);
+    }
+    if asked_memory && facts.is_empty() { extra += "\n\n(Nothing in the user's saved facts or earlier chats matches. Say so; don't guess.)"; }
+    // Today's date when the user may be telling an event, so it is saved dated (the saving rule is standing).
+    if mode != "off" && need::states_fact(last) { extra += &now_line(); }
     if need::wants_images(last) { extra += cli::IMAGES; }
-    if need::about_time(last) { extra += &now_line(); }
+    if need::about_time(last) && !extra.contains("Local date and time now") { extra += &now_line(); }
     if need::about_abilities(last) { extra += cli::ABILITIES; }
     if kind == "codex" && mode == "engine" && need::about_memory(last) { extra += cli::CODEX_MEMORY; }
-    Plan { search, standing: standing(search_allowed, search, !list.is_empty()), extra }
+    Plan { search, standing: standing(search_allowed, search, mode != "off"), extra }
+}
+
+/// The user's questions from earlier chats that relate to this message, newest first with their day (at most
+/// five, about 150 tokens). Read from the chat files on disk when asked for; nothing is kept or saved.
+fn past_questions(chat: &str, message: &str, context: &[&str]) -> String {
+    let path = Path::new(chat);
+    let Some(dir) = path.parent().filter(|d| d.is_dir()) else { return String::new() };
+    let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
+    // Every earlier question (newest chats first, at most the last 300 chats), then ranked like saved facts.
+    let mut asked: Vec<(String, u64)> = Vec::new();
+    for p in crate::core::history::list(dir).into_iter().rev().filter(|p| p != path).take(300) {
+        let ts = p.file_stem().and_then(|s| s.to_str()).and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
+        for m in crate::core::history::load(&p).into_iter().filter(|m| m.role == "user") {
+            let t: String = m.text.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(160).collect();
+            if t.len() >= 8 { asked.push((t, ts)); }
+        }
+    }
+    // Oldest first, so "newer wins ties" in the ranking favours recent questions.
+    asked.reverse();
+    let texts: Vec<String> = asked.iter().map(|(t, _)| t.clone()).collect();
+    let hits: Vec<usize> = memory::recall(&texts, message, context).into_iter().filter(|(s, _)| *s >= 2.0).map(|(_, i)| i).take(5).collect();
+    if hits.is_empty() { return String::new(); }
+    let mut s = String::from("\n\n(Questions the user asked in earlier chats that may relate:");
+    for i in hits {
+        let day = crate::core::history::when_label(asked[i].1, now_ms, utc_offset_min());
+        s += &format!("\n- {day}: {}", asked[i].0);
+    }
+    s + ")"
+}
+
+fn utc_offset_min() -> i64 {
+    use windows_sys::Win32::System::Time::{GetTimeZoneInformation, TIME_ZONE_INFORMATION};
+    let mut z: TIME_ZONE_INFORMATION = unsafe { std::mem::zeroed() };
+    let kind = unsafe { GetTimeZoneInformation(&mut z) };
+    -(z.Bias + if kind == 2 { z.DaylightBias } else { z.StandardBias }) as i64
 }
 
 /// The local date, time and time zone, for a message that depends on them (about 15 tokens).
@@ -98,12 +146,12 @@ pub struct Gate<'a> {
     sink: &'a dyn Fn(Event),
     held: RefCell<String>,
     open: Cell<bool>,
-    asked: Cell<Option<Ask>>,
+    asked: RefCell<Option<Ask>>,
 }
 
 impl<'a> Gate<'a> {
     pub fn new(on: bool, sink: &'a dyn Fn(Event)) -> Self {
-        Gate { on, sink, held: RefCell::new(String::new()), open: Cell::new(!on), asked: Cell::new(None) }
+        Gate { on, sink, held: RefCell::new(String::new()), open: Cell::new(!on), asked: RefCell::new(None) }
     }
 
     fn flush(&self) {
@@ -122,7 +170,7 @@ impl<'a> Gate<'a> {
             Event::Done => {
                 let tag = need::ask(&self.held.borrow());
                 match tag {
-                    Some(a) => self.asked.set(Some(a)),
+                    Some(a) => *self.asked.borrow_mut() = Some(a),
                     None => { self.flush(); (self.sink)(Event::Done); }
                 }
             }
@@ -131,7 +179,7 @@ impl<'a> Gate<'a> {
         }
     }
 
-    pub fn asked(&self) -> Option<Ask> { self.asked.get() }
+    pub fn asked(&self) -> Option<Ask> { self.asked.borrow().clone() }
 
     /// The tag asked for something that can't be given: show the reply as it was.
     pub fn release(&self) { self.flush(); (self.sink)(Event::Done); }
@@ -141,8 +189,7 @@ impl<'a> Gate<'a> {
 pub fn warm(mode: &str, search_allowed: bool, mem_dir: &Path) -> String {
     cli::set_diag_tools(vec![]);
     cli::set_memory_tool(mem_dir, false);
-    let has = mode != "off" && !memory_store::load(mem_dir).is_empty();
-    standing(search_allowed, false, has)
+    standing(search_allowed, false, mode != "off")
 }
 
 #[cfg(test)]
@@ -174,7 +221,6 @@ mod tests {
             msgs.push(Msg::new("user", text));
             let req = request_turns(&msgs);
             let t0 = Instant::now();
-            let p = plan(&kind, "engine", true, "chat", &req, text, &mem, None);
             let first = Cell::new(None);
             let reply = RefCell::new(String::new());
             let phases = RefCell::new(Vec::<String>::new());
@@ -185,9 +231,24 @@ mod tests {
                 Event::Tokens(n) => phases.borrow_mut().push(format!("{n} tokens")),
                 Event::Error(m) => panic!("{m}"),
             };
-            cli::run(&kind, model, effort, p.search, &p.standing, true, &req, &p.extra, &[], &cwd, &sink);
+            // The same loop as the app: a held-back escalation tag sends the message again with what was asked for.
+            let chat = root.join("chats").join("0000000000000001.jsonl").to_string_lossy().into_owned();
+            let mut asked: Option<Ask> = None;
+            let mut p;
+            loop {
+                p = plan(&kind, "engine", true, &chat, &req, text, &mem, asked.as_ref());
+                if std::env::var("LITEPILOT_E2E_SHOW").is_ok() { println!("  extra: {}", p.extra.replace('\n', " | ")); }
+                let gate = Gate::new(asked.is_none(), &sink);
+                cli::run(&kind, model, effort, p.search, &p.standing, true, &req, &p.extra, &[], &cwd, &|e| gate.pass(e));
+                match gate.asked() {
+                    Some(a @ Ask::Search) if !p.search => { mark_search(&chat); phases.borrow_mut().push(format!("asked {a:?}")); asked = Some(a); }
+                    Some(a @ Ask::Memory(_)) => { phases.borrow_mut().push(format!("asked {a:?}")); asked = Some(a); }
+                    Some(_) => { gate.release(); break; }
+                    None => break,
+                }
+            }
             let after = super::super::resident::pid();
-            let r = reply.borrow().chars().take(160).collect::<String>().replace('\n', " ");
+            let r = reply.borrow().chars().take(600).collect::<String>().replace('\n', " ");
             println!("{text:?}: first word {:?} ms, engine free {} ms, restarted {}, search {}, extra {} chars, steps {:?}, reply {r:?}",
                 first.get(), t0.elapsed().as_millis(), pid != after, p.search, p.extra.len(), phases.borrow());
             msgs.push(Msg::new("assistant", reply.into_inner()));

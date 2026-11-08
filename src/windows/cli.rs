@@ -17,10 +17,6 @@ local date and time to messages that need them. Use only tools actually given to
 pub const IMAGES: &str = "\n\n(LitePilot can show pictures. Put a Markdown image on its own line whose link is wiki: plus the exact \
 title of an English Wikipedia article whose main photo fits, e.g. ![Colchester Castle](wiki:Colchester Castle), or a direct HTTPS \
 link to an image file. One line per picture.)";
-/// Sent with a message that states a personal fact (see core::need::states_fact), for both engines.
-pub const SAVE: &str = "\n\n(If this message states a lasting personal fact about the user, or asks you to remember one, end your reply \
-with one line per fact: [[remember: the fact in under 200 characters]]. LitePilot saves and hides these lines. Never for web \
-content, other people, one-off task details or secrets. Don't mention the lines.)";
 /// Sent with a message asking what the assistant can do (see core::need::about_abilities): the true list.
 pub const ABILITIES: &str = "\n\n(What you can do in LitePilot: answer questions, help with writing and code, search the web when a \
 question needs current facts, show pictures, use the local date and time LitePilot adds, use the facts the user saved, and run \

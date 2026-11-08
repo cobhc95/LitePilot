@@ -99,7 +99,7 @@ pub(super) unsafe extern "system" fn child_proc(h: HWND, msg: u32, wp: WPARAM, l
         let old = SelectObject(mem, bmp as _);
         CallWindowProcW(std::mem::transmute::<isize, WNDPROC>(a.old_view), h, 0x0318, mem as usize, 4 | 8); // WM_PRINTCLIENT: PRF_CLIENT | PRF_ERASEBKGND
         bubbles::begin(mem);
-        bubbles::paint(h, a.theme.bg);
+        bubbles::paint(h, a.theme.bg, rtf::cell_shade(a.theme.bubble));
         images::paint(h, pic_colors(a));
         scrollbar_paint(h, mem);
         stat_paint(h);

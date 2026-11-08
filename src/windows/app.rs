@@ -876,9 +876,9 @@ fn send() {
         if p.is_login() {
             // Tools, facts and hints only when this message (or this chat) needs them; see core::need.
             let (attached, media) = crate::core::attach::for_cli(&last_user, &att);
-            let mut asked = None;
+            let mut asked: Option<need::Ask> = None;
             loop {
-                let plan = super::turn_plan::plan(&p.kind, mode, search, &chat, &req_msgs, &last_user, &mem_dir, asked);
+                let plan = super::turn_plan::plan(&p.kind, mode, search, &chat, &req_msgs, &last_user, &mem_dir, asked.as_ref());
                 if super::resident::diag_on() { let _ = std::fs::write(data.join(super::diag::TURN_FILE), gen.to_string()); }
                 let extra = format!("{attached}{}", plan.extra);
                 // The first try may be answered with an escalation tag; it is held back and the message sent again.
@@ -886,7 +886,7 @@ fn send() {
                 cli::run(&p.kind, &p.model, &p.effort, plan.search, &plan.standing, mode == "engine", &req_msgs, &extra, &media, &cwd, &|e| gate.pass(e));
                 match gate.asked() {
                     Some(need::Ask::Search) if search && !plan.search => { super::turn_plan::mark_search(&chat); sink(Event::Status("Searching the web".into())); }
-                    Some(need::Ask::Memory) if mode != "off" => sink(Event::Status("Checking memory".into())),
+                    Some(need::Ask::Memory(_)) if mode != "off" => sink(Event::Status("Checking memory".into())),
                     Some(_) => { gate.release(); break; }
                     None => break,
                 }

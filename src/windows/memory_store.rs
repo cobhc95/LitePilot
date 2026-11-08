@@ -82,6 +82,29 @@ pub fn serve_mcp(dir: &Path) {
 
 #[cfg(test)]
 mod tests {
+    /// Prints what the real saved list returns for some questions. LITEPILOT_E2E_MEM: the folder with memory.bin;
+    /// LITEPILOT_E2E_MSGS: questions separated by '|'.
+    #[test]
+    #[ignore = "reads the user's real memory list"]
+    fn recall_on_real_list() {
+        let dir = std::path::PathBuf::from(std::env::var("LITEPILOT_E2E_MEM").unwrap());
+        let list = super::load(&dir);
+        let chars: usize = list.iter().map(|f| f.len()).sum();
+        println!("{} facts, {} chars (~{} tokens)", list.len(), chars, chars / 4);
+        let qs = std::env::var("LITEPILOT_E2E_MSGS").unwrap_or_default();
+        for q in qs.split('|').filter(|q| !q.is_empty()) {
+            let r = crate::core::memory::recall(&list, q, &[]);
+            println!("\n== {q:?}: {} related", r.len());
+            for (s, i) in r.iter().take(12) { println!("  {s:5.2} #{i} {}", list[*i].chars().take(90).collect::<String>()); }
+            println!("  sent with the message: {} chars", crate::core::memory::for_message(&list, q, &[]).len());
+        }
+        let key = std::env::var("LITEPILOT_E2E_GREP").unwrap_or_default().to_lowercase();
+        if !key.is_empty() {
+            println!("\n== facts containing {key:?}:");
+            for (i, f) in list.iter().enumerate() { if f.to_lowercase().contains(&key) { println!("  #{i} {}", f.chars().take(110).collect::<String>()); } }
+        }
+    }
+
     #[test]
     fn encrypts_round_trip() {
         let dir = std::env::temp_dir().join(format!("lp-mem-{}", std::process::id()));

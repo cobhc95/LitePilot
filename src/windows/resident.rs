@@ -161,7 +161,10 @@ fn spawn(kind: &str, model: &str, effort: &str, search: bool, memory: &str, engi
         // Claude Code's background calls (its post-turn summary among them) compete with the reply; a chat needs
         // none of them. At low effort, no thinking either: the first word comes sooner.
         c.env("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1");
-        if effort == "low" { c.env("CLAUDE_CODE_DISABLE_THINKING", "1"); }
+        if effort == "low" {
+            for k in ["CLAUDE_CODE_DISABLE_THINKING", "CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING"] { c.env(k, "1"); }
+            c.env("MAX_THINKING_TOKENS", "0");
+        }
         c.args(["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--include-partial-messages", "--verbose", "--tools", &tools.join(",")]);
         // Only the search tools are pre-approved; never the file tools, which acceptEdits limits to the memory folder.
         let mut allowed: Vec<String> = if search { vec!["WebSearch".into(), "WebFetch".into()] } else { vec![] };
@@ -180,7 +183,8 @@ fn spawn(kind: &str, model: &str, effort: &str, search: bool, memory: &str, engi
         let system = system_for(search, memory);
         c.args(["--no-session-persistence", "--strict-mcp-config", "--setting-sources", "", "--disable-slash-commands", "--system-prompt", &system]);
         if !model.is_empty() { c.args(["--model", model]); }
-        if !effort.is_empty() { c.args(["--effort", effort]); }
+        // Low effort runs without thinking (set above); the effort flag would turn adaptive thinking back on.
+        if !effort.is_empty() && effort != "low" { c.args(["--effort", effort]); }
     } else {
         c.arg("app-server");
         // Chat only: nothing that starts helper processes or takes memory for tools this app never uses.
