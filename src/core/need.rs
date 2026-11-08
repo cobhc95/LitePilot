@@ -70,6 +70,21 @@ pub fn wants_images(msg: &str) -> bool {
     any(&norm(msg), &[" picture", " pictures", " photo", " photos", " image", " images", " pic ", " pics", " show me", " look like", " looks like", " what does it look", " draw", " diagram"])
 }
 
+/// Depends on the date or time now ("what time is it", "how many days until Friday", "what's on this week"), so
+/// the local date and time go along. The engines have no clock of their own here.
+pub fn about_time(msg: &str) -> bool {
+    any(&norm(msg), &[" time", " date", " day ", " days", " today", " tonight", " tomorrow", " yesterday", " week", " month", " year",
+        " o clock", " clock", " now ", " when ", " until ", " till ", " ago", " since ", " how long", " how old", " age ", " deadline",
+        " schedule", " morning", " afternoon", " evening", " weekend", " monday", " tuesday", " wednesday", " thursday", " friday",
+        " saturday", " sunday", " christmas", " ramadan", " eid", " birthday", " season", " summer", " winter", " spring", " autumn"])
+}
+
+/// Asks what the assistant can do, so the true list goes along (models otherwise list tools from other apps).
+pub fn about_abilities(msg: &str) -> bool {
+    any(&norm(msg), &[" tool", " tools", " what can you do", " what can you", " capabilit", " abilities", " features", " plugins",
+        " can you access", " do you have access", " are you able", " what are you able"])
+}
+
 /// Asks about the assistant's memory itself.
 pub fn about_memory(msg: &str) -> bool {
     any(&norm(msg), &[" remember", " memory", " memories", " forget", " what do you know about me", " do you know me", " about me "])
@@ -167,6 +182,16 @@ mod tests {
         assert!(!states_fact("what is a transistor"));
         assert!(wants_images("what does a capybara look like"));
         assert!(!wants_images("explain TCP"));
+    }
+
+    #[test]
+    fn spots_time_questions() {
+        for m in ["what time is it", "What's the date?", "how many days until Friday", "what day is it today", "is it the weekend yet"] {
+            assert!(about_time(m), "{m}");
+        }
+        for m in ["hi", "explain recursion", "write a poem about rain", "how are you"] {
+            assert!(!about_time(m), "{m}");
+        }
     }
 
     #[test]

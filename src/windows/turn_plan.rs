@@ -65,8 +65,30 @@ pub fn plan(kind: &str, mode: &str, search_allowed: bool, chat: &str, turns: &[M
     }
     if mode != "off" && need::states_fact(last) { extra += cli::SAVE; }
     if need::wants_images(last) { extra += cli::IMAGES; }
+    if need::about_time(last) { extra += &now_line(); }
+    if need::about_abilities(last) { extra += cli::ABILITIES; }
     if kind == "codex" && mode == "engine" && need::about_memory(last) { extra += cli::CODEX_MEMORY; }
     Plan { search, standing: standing(search_allowed, search, !list.is_empty()), extra }
+}
+
+/// The local date, time and time zone, for a message that depends on them (about 15 tokens).
+pub fn now_line() -> String {
+    use windows_sys::Win32::Foundation::SYSTEMTIME;
+    use windows_sys::Win32::System::SystemInformation::GetLocalTime;
+    use windows_sys::Win32::System::Time::{GetTimeZoneInformation, TIME_ZONE_INFORMATION};
+    let mut t: SYSTEMTIME = unsafe { std::mem::zeroed() };
+    let mut z: TIME_ZONE_INFORMATION = unsafe { std::mem::zeroed() };
+    let kind = unsafe { GetLocalTime(&mut t); GetTimeZoneInformation(&mut z) };
+    // 2 = daylight saving time is in effect now.
+    let (bias, name) = if kind == 2 { (z.Bias + z.DaylightBias, &z.DaylightName[..]) } else { (z.Bias + z.StandardBias, &z.StandardName[..]) };
+    let name = String::from_utf16_lossy(&name[..name.iter().position(|c| *c == 0).unwrap_or(name.len())]);
+    let off = -bias;
+    let (sign, h, m) = (if off < 0 { '-' } else { '+' }, off.abs() / 60, off.abs() % 60);
+    const DAYS: [&str; 7] = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+    const MONTHS: [&str; 12] = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+    let utc = if m == 0 { format!("UTC{sign}{h}") } else { format!("UTC{sign}{h}:{m:02}") };
+    format!("\n\n(Local date and time now: {} {} {} {}, {:02}:{:02}, {name}, {utc}.)",
+        DAYS[t.wDayOfWeek as usize % 7], t.wDay, MONTHS[(t.wMonth as usize).clamp(1, 12) - 1], t.wYear, t.wHour, t.wMinute)
 }
 
 /// Holds a reply back while it could still be an escalation tag (`[[search]]`, `[[memory]]`), so the tag never
@@ -115,6 +137,14 @@ impl<'a> Gate<'a> {
     pub fn release(&self) { self.flush(); (self.sink)(Event::Done); }
 }
 
+/// What a fresh chat starts with, for warming the CLI before the first message: no tools, nothing extra.
+pub fn warm(mode: &str, search_allowed: bool, mem_dir: &Path) -> String {
+    cli::set_diag_tools(vec![]);
+    cli::set_memory_tool(mem_dir, false);
+    let has = mode != "off" && !memory_store::load(mem_dir).is_empty();
+    standing(search_allowed, false, has)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -137,7 +167,9 @@ mod tests {
         cli::warm(&kind, model, effort, false, &standing, true, &cwd, false);
         std::thread::sleep(std::time::Duration::from_secs(6));
         let mut msgs: Vec<Msg> = vec![];
-        for text in ["hi", "how are you today?", "explain recursion in one sentence", "thanks!"] {
+        // LITEPILOT_E2E_MSGS: the messages to send, separated by '|'.
+        let list = std::env::var("LITEPILOT_E2E_MSGS").unwrap_or_else(|_| "hi|how are you today?|explain recursion in one sentence|thanks!".into());
+        for text in list.split('|') {
             let pid = super::super::resident::pid();
             msgs.push(Msg::new("user", text));
             let req = request_turns(&msgs);
@@ -150,12 +182,12 @@ mod tests {
                 Event::Text(t) => { if first.get().is_none() { first.set(Some(t0.elapsed().as_millis())); } reply.borrow_mut().push_str(&t); }
                 Event::Phase(s) | Event::Status(s) => phases.borrow_mut().push(format!("{s}@{}", t0.elapsed().as_millis())),
                 Event::Done => phases.borrow_mut().push(format!("shown done@{}", t0.elapsed().as_millis())),
+                Event::Tokens(n) => phases.borrow_mut().push(format!("{n} tokens")),
                 Event::Error(m) => panic!("{m}"),
-                _ => {}
             };
             cli::run(&kind, model, effort, p.search, &p.standing, true, &req, &p.extra, &[], &cwd, &sink);
             let after = super::super::resident::pid();
-            let r = reply.borrow().chars().take(40).collect::<String>().replace('\n', " ");
+            let r = reply.borrow().chars().take(160).collect::<String>().replace('\n', " ");
             println!("{text:?}: first word {:?} ms, engine free {} ms, restarted {}, search {}, extra {} chars, steps {:?}, reply {r:?}",
                 first.get(), t0.elapsed().as_millis(), pid != after, p.search, p.extra.len(), phases.borrow());
             msgs.push(Msg::new("assistant", reply.into_inner()));
@@ -163,12 +195,4 @@ mod tests {
         cli::reset();
         let _ = std::fs::remove_dir_all(root);
     }
-}
-
-/// What a fresh chat starts with, for warming the CLI before the first message: no tools, nothing extra.
-pub fn warm(mode: &str, search_allowed: bool, mem_dir: &Path) -> String {
-    cli::set_diag_tools(vec![]);
-    cli::set_memory_tool(mem_dir, false);
-    let has = mode != "off" && !memory_store::load(mem_dir).is_empty();
-    standing(search_allowed, false, has)
 }

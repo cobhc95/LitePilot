@@ -232,23 +232,6 @@ fn handshake(s: &mut Server) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn fast_tier_only_where_it_costs_nothing_extra() {
-        let v = serde_json::json!({"data": [
-            {"id": "gpt-6-luna", "serviceTiers": {"id": "priority", "name": "Fast", "description": "1.5x speed"}},
-            {"id": "gpt-6-sol", "serviceTiers": [{"id": "priority", "name": "Fast", "description": "2x speed, increased usage"}]},
-            {"id": "plain"}
-        ]});
-        assert_eq!(super::free_fast(&v), vec!["gpt-6-luna".to_string()]);
-        let end = r#"{"type":"stream_event","event":{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":2,"cache_read_input_tokens":649,"output_tokens":40}}}"#;
-        assert_eq!(super::message_end(end), Some((691, true)));
-        assert_eq!(super::message_end(&end.replace("end_turn", "tool_use")), Some((691, false)));
-        assert_eq!(super::message_end(r#"{"type":"assistant"}"#), None);
-    }
-}
-
 /// Models whose Fast tier Codex lists without "increased usage" (e.g. gpt-6-luna: "1.5x speed").
 static FREE_FAST: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
@@ -297,7 +280,8 @@ fn message_end(line: &str) -> Option<(u64, bool)> {
     let e = &v["event"];
     if e["type"] != "message_delta" { return None; }
     let u = &e["usage"];
-    let n = ["input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens"].iter().filter_map(|k| u[*k].as_u64()).sum();
+    // This message's own tokens: what was newly read and written. The conversation re-read from the cache is left out.
+    let n = ["input_tokens", "cache_creation_input_tokens", "output_tokens"].iter().filter_map(|k| u[*k].as_u64()).sum();
     let stop = e["delta"]["stop_reason"].as_str().unwrap_or("");
     Some((n, !stop.is_empty() && stop != "tool_use" && stop != "pause_turn"))
 }
@@ -445,5 +429,22 @@ pub fn run(kind: &str, model: &str, effort: &str, search: bool, memory: &str, en
         }
         // A failed turn leaves the CLI holding a message the chat has dropped, so start clean next time.
         None => { if let Some(s) = g.take() { s.kill(); } }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn fast_tier_only_where_it_costs_nothing_extra() {
+        let v = serde_json::json!({"data": [
+            {"id": "gpt-6-luna", "serviceTiers": {"id": "priority", "name": "Fast", "description": "1.5x speed"}},
+            {"id": "gpt-6-sol", "serviceTiers": [{"id": "priority", "name": "Fast", "description": "2x speed, increased usage"}]},
+            {"id": "plain"}
+        ]});
+        assert_eq!(super::free_fast(&v), vec!["gpt-6-luna".to_string()]);
+        let end = r#"{"type":"stream_event","event":{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":2,"cache_read_input_tokens":649,"output_tokens":40}}}"#;
+        assert_eq!(super::message_end(end), Some((42, true)));
+        assert_eq!(super::message_end(&end.replace("end_turn", "tool_use")), Some((42, false)));
+        assert_eq!(super::message_end(r#"{"type":"assistant"}"#), None);
     }
 }

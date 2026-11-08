@@ -10,7 +10,7 @@ pub enum Event {
     /// What LitePilot itself is waiting on before the model's first step ("Starting Claude", "Waiting for
     /// Claude"). Shown on the same single line, replaced by the next phase or the model's first real step.
     Phase(String),
-    /// Tokens a model call used (input, cached input and output), as the provider reported them.
+    /// This message's own tokens in a model call (new input and output; history re-read from cache left out).
     Tokens(u64),
     Done,
     Error(String),
@@ -79,17 +79,20 @@ pub fn parse_sse(f: ApiFormat, data: &str) -> Option<Event> {
     }
     match f {
         ApiFormat::OpenAi => {
-            if let Some(n) = v["usage"]["total_tokens"].as_u64() { return Some(Event::Tokens(n)); }
+            // This message's own tokens: the conversation re-read from the cache is left out.
+            if let Some(n) = v["usage"]["total_tokens"].as_u64() {
+                return Some(Event::Tokens(n.saturating_sub(v["usage"]["prompt_tokens_details"]["cached_tokens"].as_u64().unwrap_or(0))));
+            }
             let t = v["choices"][0]["delta"]["content"].as_str()?;
             (!t.is_empty()).then(|| Event::Text(t.to_string()))
         }
         ApiFormat::Anthropic => match v["type"].as_str()? {
             "content_block_delta" => v["delta"]["text"].as_str().map(|t| Event::Text(t.into())),
             "content_block_start" => block_status(&v["content_block"]),
-            // Input (cached included) at the start of a call, output at its end.
+            // New input at the start of a call (the conversation re-read from the cache left out), output at its end.
             "message_start" => {
                 let u = &v["message"]["usage"];
-                Some(Event::Tokens(["input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"].iter().filter_map(|k| u[k].as_u64()).sum()))
+                Some(Event::Tokens(["input_tokens", "cache_creation_input_tokens"].iter().filter_map(|k| u[k].as_u64()).sum()))
             }
             "message_delta" => v["usage"]["output_tokens"].as_u64().map(Event::Tokens),
             "message_stop" => Some(Event::Done),

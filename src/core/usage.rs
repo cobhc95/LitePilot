@@ -17,16 +17,20 @@ pub struct Usage {
     pub at: i64,
 }
 
-/// Tokens one model call used, as the provider reports them: input (cached included) plus output.
+/// This message's own tokens in one model call: new input plus output. The earlier conversation, which every
+/// call reads again from the provider's cache, is left out, so the count doesn't grow with the chat.
 /// Claude Code's `result` line (the whole turn) and Codex's per-call `thread/tokenUsage/updated`.
 pub fn cli_tokens(line: &str) -> Option<u64> {
     if !line.contains("\"result\"") && !line.contains("tokenUsage") { return None; }
     let v: Value = serde_json::from_str(line).ok()?;
     if v["type"] == "result" {
         let u = &v["usage"];
-        return Some(["input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens"].iter().filter_map(|k| u[k].as_u64()).sum());
+        return Some(["input_tokens", "cache_creation_input_tokens", "output_tokens"].iter().filter_map(|k| u[k].as_u64()).sum());
     }
-    (v["method"] == "thread/tokenUsage/updated").then(|| v["params"]["tokenUsage"]["last"]["totalTokens"].as_u64()).flatten()
+    if v["method"] != "thread/tokenUsage/updated" { return None; }
+    let last = &v["params"]["tokenUsage"]["last"];
+    let total = last["totalTokens"].as_u64()?;
+    Some(total.saturating_sub(last["cachedInputTokens"].as_u64().unwrap_or(0)))
 }
 
 /// Every model call that went into one reply (tool rounds included), summed; an estimate when none reported.
@@ -123,6 +127,9 @@ mod tests {
             t.add(cli_tokens(&l).unwrap());
         }
         assert_eq!(t.label(0), "1,028,366 tokens");
+        // Per message: the conversation Codex read again from its cache isn't counted.
+        let l = r#"{"method":"thread/tokenUsage/updated","params":{"tokenUsage":{"last":{"totalTokens":5104,"inputTokens":5093,"cachedInputTokens":4224,"outputTokens":11}}}}"#;
+        assert_eq!(cli_tokens(l), Some(880));
         // Anthropic and OpenAI API streams report input at the start and output at the end of each call.
         let mut t = Tally::default();
         for l in [r#"{"type":"message_start","message":{"usage":{"input_tokens":1200,"cache_read_input_tokens":300,"output_tokens":1}}}"#,
@@ -131,6 +138,6 @@ mod tests {
                   r#"{"type":"message_delta","usage":{"output_tokens":58}}"#] {
             if let Some(crate::core::protocol::Event::Tokens(n)) = crate::core::protocol::parse_sse(crate::core::protocol::ApiFormat::Anthropic, l) { t.add(n); }
         }
-        assert_eq!(t.label(0), "3,600 tokens");
+        assert_eq!(t.label(0), "3,300 tokens"); // the 300 read from cache left out
     }
 }

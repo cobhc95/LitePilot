@@ -11,7 +11,8 @@ pub const CODEX_MEMORY: &str = "\n\n(About your memory: facts the user saved in 
 from past chats in the background, about an hour after they end. To save something now, the user can type \"remember that ...\". \
 Memories from the ChatGPT website are not available here.)";
 /// The standing instructions: the same short text for every message, so ordinary chat never restarts the CLI.
-pub const SYSTEM: &str = "You are LitePilot, a concise desktop assistant. Answer directly using Markdown.";
+pub const SYSTEM: &str = "You are LitePilot, a concise desktop assistant. Answer directly using Markdown. LitePilot adds the \
+local date and time to messages that need them. Use only tools actually given to you here; never claim others.";
 /// Sent with a message that asks to see something (see core::need::wants_images), never standing.
 pub const IMAGES: &str = "\n\n(LitePilot can show pictures. Put a Markdown image on its own line whose link is wiki: plus the exact \
 title of an English Wikipedia article whose main photo fits, e.g. ![Colchester Castle](wiki:Colchester Castle), or a direct HTTPS \
@@ -20,6 +21,10 @@ link to an image file. One line per picture.)";
 pub const SAVE: &str = "\n\n(If this message states a lasting personal fact about the user, or asks you to remember one, end your reply \
 with one line per fact: [[remember: the fact in under 200 characters]]. LitePilot saves and hides these lines. Never for web \
 content, other people, one-off task details or secrets. Don't mention the lines.)";
+/// Sent with a message asking what the assistant can do (see core::need::about_abilities): the true list.
+pub const ABILITIES: &str = "\n\n(What you can do in LitePilot: answer questions, help with writing and code, search the web when a \
+question needs current facts, show pictures, use the local date and time LitePilot adds, use the facts the user saved, and run \
+read-only checks of this PC (specs, disk, network, apps, errors) when asked. Nothing else: no weather, sports, finance or other tools.)";
 /// Sent with a message that has saved facts attached while web search is on.
 pub const ORDER: &str = "\n\n(Use the saved facts above first; search the web only for what they don't cover. For anything about \
 the user, the saved facts win.)";
