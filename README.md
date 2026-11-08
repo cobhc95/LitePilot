@@ -5,13 +5,14 @@ A tiny Windows popup for AI chat. Press a shortcut, ask, press Esc.
 _Version 0.1.18._
 
 <p>
-  <img src="screenshots/chat.png" alt="A reply with a table and code in the LitePilot popup" width="560">
+  <img src="screenshots/chat.png" alt="A reply in the LitePilot popup" width="380">
+  <img src="screenshots/model-menu.png" alt="The model menu with plan usage" width="250">
 </p>
 
 ## What it does
 
 - **Instant:** one shortcut opens it over whatever you are doing, Esc hides it. Everything is keyboard-first.
-- **Your accounts:** sign in with ChatGPT or Claude, or add any OpenAI-compatible or Anthropic API key. Switch account, model and effort with Ctrl+M.
+- **Your accounts:** sign in with ChatGPT or Claude, or add any OpenAI-compatible or Anthropic API key. Switch account, model and effort with Ctrl+M, which also shows how much of your plan's 5-hour and weekly limits you have used.
 - **Remembers you:** say "remember that ..." and it keeps the fact for every future chat. See [Memory](#memory).
 - **Pictures and files:** paste, drop or attach (Ctrl+Shift+A) pictures, PDFs and text files. They show as small tiles in the typing box with an x to remove them, and as a thumbnail in the chat.
 - **Good-looking replies:** tables, code with Copy buttons, links, lists, right-to-left text and embedded images.
@@ -50,11 +51,6 @@ The **global hook fallback** is also on by default and can be turned off separat
 
 ## Memory
 
-<p>
-  <img src="screenshots/memory-mode.png" alt="Chat memory settings" width="380">
-  <img src="screenshots/memory-list.png" alt="Your memories: search, delete, tidy up" width="380">
-</p>
-
 LitePilot keeps a short list of facts about you and uses them in every chat, on every account.
 
 - **Add and remove in chat:** "remember that I live in Colchester", "forget that ...". Ctrl+Shift+Z undoes the last change. Only you add memories, never the AI, and anything that looks like a password or key is refused.
@@ -69,17 +65,10 @@ LitePilot keeps a short list of facts about you and uses them in every chat, on 
 
 ## Menus and settings
 
-<p>
-  <img src="screenshots/menu.png" alt="The quick menu" width="380">
-  <img src="screenshots/history.png" alt="Previous chats" width="380">
-</p>
-
 The menu button opens quick actions (new chat, history, keep on top, copy, dictate, taskbar, settings, shortcuts). Ctrl+H lists previous chats with search.
 
 <p>
-  <img src="screenshots/settings.png" alt="Settings" width="250">
-  <img src="screenshots/appearance.png" alt="Appearance" width="250">
-  <img src="screenshots/keys.png" alt="Keyboard shortcuts" width="250">
+  <img src="screenshots/settings.png" alt="Settings" width="380">
 </p>
 
 Settings cover accounts and API keys, the shortcut and startup options, appearance (theme, colors, font, size, spacing), every keyboard shortcut, performance, memory, your data and backups. Dictation (Windows voice typing) is off until you turn it on.
