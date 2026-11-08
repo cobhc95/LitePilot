@@ -125,8 +125,11 @@ pub fn standing(list: &[String]) -> String {
 /// only says "Ryzen 7 9700X" and "Radeon". Each line is one idea; every word is already in stem form.
 const IDEAS: &[&[&str]] = &[
     &["pc", "computer", "desktop", "laptop", "machine", "rig", "build", "spec", "hardware", "cpu", "gpu", "ram", "processor", "graphic", "ryzen", "intel", "nvidia", "radeon", "geforce", "motherboard", "ssd", "monitor", "keyboard", "mouse"],
-    &["phone", "iphone", "android", "pixel", "galaxy", "mobile", "tablet", "ipad"],
-    &["car", "vehicle", "drive", "truck", "bike", "motorcycle"],
+    &["phone", "iphone", "android", "pixel", "galaxy", "mobile", "tablet", "ipad", "samsung", "xiaomi", "huawei", "oneplus", "oppo", "motorola", "nokia", "sony", "redmi", "realme"],
+    &["car", "vehicle", "drive", "driving", "truck", "bike", "motorcycle", "suv", "sedan", "hatchback", "saloon", "coupe", "van", "mileage", "mot", "tyre", "tire", "petrol", "diesel", "hybrid", "ev", "engine",
+      "suzuki", "toyota", "honda", "ford", "bmw", "mercedes", "audi", "volkswagen", "vw", "nissan", "mazda", "hyundai", "kia", "tesla", "volvo", "peugeot", "renault", "fiat", "jeep", "subaru", "lexus", "porsche",
+      "chevrolet", "chevy", "dodge", "mitsubishi", "skoda", "citroen", "vauxhall", "opel", "jaguar", "ferrari", "lamborghini", "bentley", "infiniti", "acura", "mg", "byd", "gmc", "cadillac", "daihatsu", "isuzu",
+      "swift", "jimny", "vitara", "civic", "corolla", "camry", "yaris", "mustang", "fiesta", "polo", "passat", "prius", "rav4", "hilux", "landcruiser", "wrangler"],
     &["job", "work", "career", "company", "employer", "profession", "occupation", "role", "boss", "office"],
     &["study", "student", "school", "university", "college", "degree", "course", "major", "class"],
     &["live", "home", "city", "town", "country", "address", "location", "move", "house", "flat", "apartment", "area"],
@@ -210,8 +213,13 @@ const SYNONYMS: &[(&str, &[&str])] = &[
     ("career", &["job", "profession", "training"]),
     ("live", &["home", "city", "town", "country", "address", "based"]),
     ("home", &["live", "house", "flat", "city"]),
-    ("car", &["vehicle", "drive", "model"]),
-    ("phone", &["iphone", "android", "pixel", "galaxy", "mobile"]),
+    ("car", &["vehicle", "drive", "model", "suzuki", "toyota", "honda", "ford", "bmw", "mercedes", "audi", "volkswagen", "nissan", "mazda", "hyundai", "kia", "tesla", "volvo", "peugeot", "renault", "subaru", "lexus", "jeep", "fiat", "skoda"]),
+    ("vehicle", &["car", "drive", "truck", "van", "suv"]),
+    ("drive", &["car", "vehicle", "suzuki", "toyota", "honda", "ford", "bmw"]),
+    ("phone", &["iphone", "android", "pixel", "galaxy", "mobile", "samsung", "xiaomi", "huawei", "oneplus"]),
+    ("laptop", &["macbook", "thinkpad", "dell", "lenovo", "asus", "acer", "hp", "notebook"]),
+    ("watch", &["apple", "garmin", "fitbit", "smartwatch"]),
+    ("pet", &["dog", "cat", "puppy", "kitten", "rabbit", "hamster", "bird", "fish"]),
     ("hobby", &["enjoy", "like", "love", "play", "interest"]),
     ("family", &["wife", "husband", "partner", "son", "daughter", "kid", "child", "brother", "sister", "mother", "father"]),
 ];
@@ -354,7 +362,13 @@ pub fn for_message(list: &[String], message: &str, context: &[&str]) -> String {
     let personal = is_personal(&lower) || !owned(&lower).is_empty();
     let (most, chars) = if personal { (PER_MESSAGE * 2, BUDGET) } else { (PER_MESSAGE, PER_MESSAGE_CHARS) };
     // Only clear matches: a word or idea in common, not the newest-facts fallback.
-    let hits = recall(list, message, context).into_iter().filter(|(s, _)| *s >= 1.0).map(|(_, i)| i);
+    let found: Vec<(f64, usize)> = recall(list, message, context).into_iter().filter(|(s, _)| *s >= 1.0).collect();
+    // "what's my car", "do I have a dog": a direct question about the user's own thing. When no fact is clearly about
+    // it, send the newest facts too rather than risk hiding the answer behind words we don't know.
+    let direct = ["what is my", "what's my", "whats my", "what my", "do i have", "do i own", "which is my", "what do i have", "what do i own", "what do i drive", "what do i use"].iter().any(|k| lower.contains(k));
+    let weak = !found.iter().any(|(s, _)| *s >= 6.0);
+    let pad = if direct && weak { (0..list.len()).rev().collect::<Vec<usize>>() } else { vec![] };
+    let hits = found.into_iter().map(|(_, i)| i).chain(pad);
     pick(list, hits, most, chars)
 }
 
@@ -553,6 +567,20 @@ mod tests {
         // A follow-up with no topic of its own keeps the chat's topic.
         let f = for_message(&l, "it's in your memories", &["How does it compare with my desktop"]);
         assert!(f.contains("Ryzen") && f.contains("14 TB"), "{f}");
+    }
+
+    #[test]
+    fn finds_a_car_by_brand_even_with_car_care_facts() {
+        let mut l: Vec<String> = (0..60).map(|i| format!("You have investigated topic number {i} in detail")).collect();
+        l.push("Owns a Suzuki Swift".into());
+        l.push("Interested in car care and detailing".into());
+        l.extend((0..30).map(|i| format!("Likes thing {i}")));
+        let b = for_message(&l, "whats my car", &[]);
+        assert!(b.contains("Suzuki"), "{b}");
+        let mut m: Vec<String> = (0..60).map(|i| format!("Likes thing {i}")).collect();
+        m.insert(55, "Has a Suzuki".into());
+        assert!(for_message(&m, "what do I drive", &[]).contains("Suzuki"));
+        assert!(for_message(&m, "whats my ride", &[]).contains("Suzuki"), "padding for direct questions");
     }
 
     #[test]
