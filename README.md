@@ -1,12 +1,13 @@
-# LitePilot
+﻿# LitePilot
 
 A tiny Windows popup for AI chat. Press a shortcut, ask, press Esc.
 
-_Version 0.1.18._
+_Version 0.1.19._
 
 <p>
   <img src="screenshots/chat.png" alt="A reply in the LitePilot popup" width="380">
   <img src="screenshots/model-menu.png" alt="The model menu with plan usage" width="250">
+  <img src="screenshots/claude-models.png" alt="Claude models (Haiku, Sonnet, Opus) with 5-hour and weekly plan usage" width="250">
 </p>
 
 ## What it does
