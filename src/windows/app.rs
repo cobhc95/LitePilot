@@ -881,16 +881,17 @@ fn send() {
                 let plan = super::turn_plan::plan(&p.kind, mode, search, &chat, &req_msgs, &last_user, &mem_dir, asked.as_ref());
                 if super::resident::diag_on() { let _ = std::fs::write(data.join(super::diag::TURN_FILE), gen.to_string()); }
                 let extra = format!("{attached}{}", plan.extra);
-                // The first try may be answered with an escalation tag; it is held back and the message sent again.
-                let gate = super::turn_plan::Gate::new(asked.is_none(), &sink);
+                // A reply that is only an escalation tag is held back and the message sent again with what was asked
+                // for, once per kind; a tag is never shown, a repeated one gets a plain answer instead.
+                let gate = super::turn_plan::Gate::new(true, &sink);
                 cli::run(&p.kind, &p.model, &p.effort, plan.search, &plan.standing, mode == "engine", &req_msgs, &extra, &media, &cwd, &|e| gate.pass(e));
-                match gate.asked() {
-                    Some(need::Ask::Search) if search && !plan.search => { super::turn_plan::mark_search(&chat); sink(Event::Status("Searching the web".into())); }
-                    Some(need::Ask::Memory(_)) if mode != "off" => sink(Event::Status("Checking memory".into())),
-                    Some(_) => { gate.release(); break; }
-                    None => break,
+                let Some(a) = gate.asked() else { break };
+                if !super::turn_plan::next_step(&a, asked.as_ref(), search, plan.search, mode != "off") { gate.answer(&a); break; }
+                match a {
+                    need::Ask::Search => { super::turn_plan::mark_search(&chat); sink(Event::Status("Searching the web".into())); }
+                    need::Ask::Memory(_) => sink(Event::Status("Checking memory".into())),
                 }
-                asked = gate.asked();
+                asked = Some(a);
             }
         } else {
             let f = if p.kind == "anthropic" { ApiFormat::Anthropic } else { ApiFormat::OpenAi };

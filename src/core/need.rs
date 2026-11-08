@@ -107,7 +107,9 @@ pub fn about_memory(msg: &str) -> bool {
 pub fn casual(msg: &str) -> bool {
     let s = norm(msg);
     let words = s.split_whitespace().count();
-    words <= 2 || (words <= 6 && any(&s, &[" hi ", " hey ", " hello ", " thanks", " thank you", " thx", " ok ", " okay", " cool ", " nice ",
+    // A greeting with a real question in it ("hi, what's my name") isn't small talk.
+    let asks = any(&s, &[" my ", " mine ", " what", " who", " where", " when", " which", " why", " remember", " do i ", " am i ", " can you "]);
+    words <= 2 && !asks || (words <= 6 && !asks && any(&s, &[" hi ", " hey ", " hello ", " thanks", " thank you", " thx", " ok ", " okay", " cool ", " nice ",
         " good morning", " good night", " lol", " haha", " bye", " sure ", " yes ", " no ", " yeah", " nope", " great ", " how are you"]))
 }
 
@@ -175,6 +177,14 @@ mod tests {
             assert!(!search(m), "{m}");
             assert!(!memory(m), "{m}");
         }
+    }
+
+    #[test]
+    fn greetings_with_questions_are_not_small_talk() {
+        for m in ["Hi whats my name", "hey, where do I live?", "my name?", "hello what time is it"] {
+            assert!(!casual(m), "{m}");
+        }
+        assert!(memory("Hi whats my name"));
     }
 
     #[test]

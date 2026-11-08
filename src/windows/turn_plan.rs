@@ -74,7 +74,14 @@ pub fn plan(kind: &str, mode: &str, search_allowed: bool, chat: &str, turns: &[M
         let q = match asked { Some(Ask::Memory(q)) if !q.is_empty() => q.as_str(), _ => last };
         extra += &past_questions(chat, q, &context);
     }
-    if asked_memory && facts.is_empty() { extra += "\n\n(Nothing in the user's saved facts or earlier chats matches. Say so; don't guess.)"; }
+    // After a lookup the model answers: what was found is all there is.
+    if asked_memory {
+        extra += if facts.is_empty() && !extra.contains("earlier chats") {
+            "\n\n(LitePilot looked this up: nothing in the user's saved facts or earlier chats matches. Tell the user you don't have that saved; don't guess, and don't reply with a [[memory]] tag again.)"
+        } else {
+            "\n\n(LitePilot looked this up; the facts above are everything that matched. Answer from them. If they don't say, tell the user you don't have that saved; don't guess, and don't reply with a [[memory]] tag again.)"
+        };
+    }
     // Today's date when the user may be telling an event, so it is saved dated (the saving rule is standing).
     if mode != "off" && need::states_fact(last) { extra += &now_line(); }
     if need::wants_images(last) { extra += cli::IMAGES; }
@@ -140,7 +147,7 @@ pub fn now_line() -> String {
 }
 
 /// Holds a reply back while it could still be an escalation tag (`[[search]]`, `[[memory]]`), so the tag never
-/// reaches the screen; anything else is passed on at once. Off for a message that is already being sent again.
+/// reaches the screen; anything else is passed on at once.
 pub struct Gate<'a> {
     on: bool,
     sink: &'a dyn Fn(Event),
@@ -181,8 +188,27 @@ impl<'a> Gate<'a> {
 
     pub fn asked(&self) -> Option<Ask> { self.asked.borrow().clone() }
 
-    /// The tag asked for something that can't be given: show the reply as it was.
-    pub fn release(&self) { self.flush(); (self.sink)(Event::Done); }
+    /// The tag asked for something that can't be given (or was given already): answer plainly instead of showing it.
+    pub fn answer(&self, ask: &Ask) {
+        self.held.borrow_mut().clear();
+        self.open.set(true);
+        let text = match ask {
+            Ask::Memory(_) => "I don't have that in your saved memories. If you tell me, I'll remember it.",
+            Ask::Search => "I couldn't look that up just now.",
+        };
+        (self.sink)(Event::Text(text.into()));
+        (self.sink)(Event::Done);
+    }
+}
+
+/// Whether a tag the model just answered with should send the message again: search once, when it is allowed and
+/// still off; a memory lookup once per message. Anything else gets a plain answer instead (see `Gate::answer`).
+pub fn next_step(now: &Ask, before: Option<&Ask>, search_allowed: bool, search_on: bool, memory_on: bool) -> bool {
+    let tried = |k: &Ask| before.is_some_and(|b| std::mem::discriminant(b) == std::mem::discriminant(k));
+    match now {
+        Ask::Search => search_allowed && !search_on && !tried(now),
+        Ask::Memory(_) => memory_on && !tried(now),
+    }
 }
 
 /// What a fresh chat starts with, for warming the CLI before the first message: no tools, nothing extra.
@@ -238,12 +264,11 @@ mod tests {
             loop {
                 p = plan(&kind, "engine", true, &chat, &req, text, &mem, asked.as_ref());
                 if std::env::var("LITEPILOT_E2E_SHOW").is_ok() { println!("  extra: {}", p.extra.replace('\n', " | ")); }
-                let gate = Gate::new(asked.is_none(), &sink);
+                let gate = Gate::new(true, &sink);
                 cli::run(&kind, model, effort, p.search, &p.standing, true, &req, &p.extra, &[], &cwd, &|e| gate.pass(e));
                 match gate.asked() {
-                    Some(a @ Ask::Search) if !p.search => { mark_search(&chat); phases.borrow_mut().push(format!("asked {a:?}")); asked = Some(a); }
-                    Some(a @ Ask::Memory(_)) => { phases.borrow_mut().push(format!("asked {a:?}")); asked = Some(a); }
-                    Some(_) => { gate.release(); break; }
+                    Some(a) if next_step(&a, asked.as_ref(), true, p.search, true) => { if a == Ask::Search { mark_search(&chat); } phases.borrow_mut().push(format!("asked {a:?}")); asked = Some(a); }
+                    Some(a) => { phases.borrow_mut().push(format!("asked again {a:?}")); gate.answer(&a); break; }
                     None => break,
                 }
             }
