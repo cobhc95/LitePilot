@@ -38,21 +38,20 @@ pub fn save(data: &Path, list: &[String]) -> bool {
 
 fn facts_file(data: &Path) -> std::path::PathBuf { data.join("engine-memory").join("claude").join("FACTS.md") }
 
-/// For a Claude sign-in with a big list: writes every fact to FACTS.md in Claude's own folder (rebuilt from the
-/// saved list each message, so nothing Claude does to it comes back) and returns the note that tells it so.
-/// In every other case the file is removed, so a plain-text copy only exists while it is useful.
-pub fn lookup_note(data: &Path, mem: &Path, kind: &str, mode: &str) -> String {
-    let path = facts_file(data);
-    let list = load(mem);
-    if kind == "claude" && mode == "engine" && !memory::fits(&list) {
-        let text: String = list.iter().map(|f| format!("- {f}\n")).collect();
-        if let Some(dir) = path.parent() { let _ = std::fs::create_dir_all(dir); }
-        if std::fs::write(&path, text).is_ok() {
-            return "\n\n(The user's full list of saved facts is the file FACTS.md in your working folder. If the question may involve what they've told you and the facts above don't cover it, read that file. Never edit it.)".into();
-        }
+/// Claude used to keep its own MEMORY.md (and read a plain FACTS.md copy) through file tools. It now saves
+/// through [[remember:]] lines like ChatGPT, with no file tools, so its old notes are moved into the encrypted
+/// list once and the plain-text files removed.
+pub fn adopt_claude_memory(data: &Path, mem: &Path) {
+    let _ = std::fs::remove_file(facts_file(data));
+    let old = data.join("engine-memory").join("claude").join("MEMORY.md");
+    let Ok(text) = std::fs::read_to_string(&old) else { return };
+    let mut list = load(mem);
+    let before = list.len();
+    for l in text.lines() {
+        let f = l.trim().trim_start_matches(['-', '*']).trim();
+        if !f.is_empty() && !f.starts_with('#') { let _ = memory::add(&mut list, f); }
     }
-    let _ = std::fs::remove_file(&path);
-    String::new()
+    if list.len() == before || save(mem, &list) { let _ = std::fs::remove_file(&old); }
 }
 
 /// The standing-instructions text for an account in this memory mode. Local and Engine both send the saved
@@ -60,14 +59,6 @@ pub fn lookup_note(data: &Path, mem: &Path, kind: &str, mode: &str) -> String {
 pub fn block_for(data: &Path, mode: &str) -> String {
     if mode == "off" { return String::new(); }
     memory::standing(&load(data))
-}
-
-/// `block_for`, plus for ChatGPT with memory on the rule for saving new personal facts.
-pub fn block_for_profile(data: &Path, kind: &str, mode: &str) -> String {
-    // A list too big for the short block is looked up through the memory tool instead of being sent whole.
-    let list = load(data);
-    let base = if mode != "off" && !memory::fits(&list) { memory::tool_block(&list) } else { block_for(data, mode) };
-    if kind == "codex" && mode != "off" { base + super::cli::CODEX_SAVE } else { base }
 }
 
 /// The facts that relate to this message, when the list is too big to send whole. Empty otherwise.

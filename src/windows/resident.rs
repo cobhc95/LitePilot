@@ -137,6 +137,7 @@ fn memory_tool() -> Option<(String, String)> {
 /// so a change restarts the CLI with only those tools, and ordinary chat carries no tool definitions at all.
 static DIAG: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
 pub fn set_diag_tools(cats: Vec<&'static str>) { *DIAG.lock().unwrap_or_else(|e| e.into_inner()) = cats; }
+pub fn diag_on() -> bool { diag_tools().is_some() }
 fn diag_tools() -> Option<String> {
     let d = DIAG.lock().unwrap_or_else(|e| e.into_inner());
     (!d.is_empty()).then(|| d.join(","))
@@ -150,17 +151,10 @@ fn spawn(kind: &str, model: &str, effort: &str, search: bool, memory: &str, engi
     let mut c = hidden(exe.to_str()?);
     c.current_dir(cwd).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
     if kind == "claude" {
-        // Web search and page reading only: no commands. With engine memory, file tools too, but its working folder
-        // is the memory folder and edits are only accepted inside it; anything outside needs a permission nobody can give.
-        // With web search on, it may still save personal facts, but the prompt forbids saving anything a web page says.
-        let mut tools = if search { vec!["WebSearch", "WebFetch"] } else { vec![] };
-        let dir = claude_memory_dir(cwd);
-        if engine && std::fs::create_dir_all(&dir).is_ok() {
-            tools.extend(&["Read", "Write", "Edit"]);
-            c.current_dir(&dir);
-            let settings = json!({"autoMemoryEnabled": true, "autoMemoryDirectory": dir.to_string_lossy().replace('\\', "/")});
-            c.args(["--permission-mode", "acceptEdits", "--settings", &settings.to_string()]);
-        }
+        // No tools at all for ordinary chat; web search and page reading only once a message in this chat needed
+        // them. Never file tools or commands: memory is saved by LitePilot from [[remember:]] lines (about 1,300
+        // tokens less per message than Claude's own file-based memory).
+        let tools = if search { vec!["WebSearch", "WebFetch"] } else { vec![] };
         c.args(["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--include-partial-messages", "--verbose", "--tools", &tools.join(",")]);
         // Only the search tools are pre-approved; never the file tools, which acceptEdits limits to the memory folder.
         let mut allowed: Vec<String> = if search { vec!["WebSearch".into(), "WebFetch".into()] } else { vec![] };
@@ -176,16 +170,20 @@ fn spawn(kind: &str, model: &str, effort: &str, search: bool, memory: &str, engi
         }
         if !servers.is_empty() { c.args(["--mcp-config", &json!({"mcpServers": servers}).to_string()]); }
         if !allowed.is_empty() { c.args(["--allowedTools", &allowed.join(","), "--permission-prompts", "none"]); }
-        let mut system = system_for(search, memory);
-        if engine { system += super::cli::ENGINE_MEMORY; system += super::cli::SOURCE_ORDER; }
+        let system = system_for(search, memory);
         c.args(["--no-session-persistence", "--strict-mcp-config", "--setting-sources", "", "--disable-slash-commands", "--system-prompt", &system]);
         if !model.is_empty() { c.args(["--model", model]); }
         if !effort.is_empty() { c.args(["--effort", effort]); }
     } else {
         c.arg("app-server");
         // Chat only: nothing that starts helper processes or takes memory for tools this app never uses.
-        for f in ["apps", "browser_use", "browser_use_external", "computer_use", "in_app_browser", "multi_agent", "shell_tool", "image_generation", "skill_search", "tool_suggest", "remote_plugin", "shell_snapshot"] {
+        for f in ["apps", "browser_use", "browser_use_external", "computer_use", "in_app_browser", "multi_agent", "shell_tool", "image_generation", "skill_search", "tool_suggest", "remote_plugin", "shell_snapshot",
+            "unified_exec", "view_image", "sleep_tool", "goals", "plugins", "hooks", "code_mode_host", "skill_mcp_dependency_install", "workspace_dependencies", "plugin_discovery_prefetch", "deferred_tool_world_state", "mentions_v2"] {
             c.args(["--disable", f]);
+        }
+        // Codex's own permission, environment and project-doc blocks are for coding; a chat needs none of them.
+        for k in ["include_permissions_instructions=false", "include_environment_context=false", "include_apps_instructions=false", "project_doc_max_bytes=0"] {
+            c.args(["-c", k]);
         }
         if let Some((exe, dir)) = memory_tool() {
             let n = crate::core::mcp::SERVER;
@@ -242,8 +240,8 @@ fn turn_claude(s: &mut Server, prompt: &str, media: &[PathBuf], sink: &dyn Fn(Ev
 /// The conversation inside a running Codex: made once, then reused for every message that follows on from it.
 fn ensure_thread(s: &mut Server, cwd: &Path, system: &str) -> Result<(), String> {
     if s.thread.is_some() { return Ok(()); }
-    let system = if s.engine { format!("{system}{}{}", super::cli::CODEX_MEMORY, super::cli::SOURCE_ORDER) } else { system.to_string() };
-    let r = s.call("thread/start", json!({"cwd": cwd, "ephemeral": !s.engine, "sandbox": "read-only", "approvalPolicy": "never", "developerInstructions": system}))?;
+    // LitePilot's short instructions replace Codex's coding-agent prompt (about 3,400 tokens less per message).
+    let r = s.call("thread/start", json!({"cwd": cwd, "ephemeral": !s.engine, "sandbox": "read-only", "approvalPolicy": "never", "baseInstructions": system}))?;
     match r["thread"]["id"].as_str() {
         Some(id) => { s.thread = Some(id.to_string()); Ok(()) }
         None => Err("Codex didn't start a conversation.".into()),
@@ -267,10 +265,12 @@ pub fn reset() {
     if let Ok(mut g) = SERVER.try_lock() { if let Some(s) = g.take() { s.kill(); } }
 }
 
-fn system_for(search: bool, memory: &str) -> String {
-    let base = if search { format!("{} {}", super::cli::SYSTEM, super::cli::SEARCH) } else { super::cli::SYSTEM.to_string() };
+/// The standing instructions: the short core, the search line while search is on, the tool note while diagnostic
+/// tools are on, and `standing` (the escalation lines; see core::need). Saved facts never go here.
+fn system_for(search: bool, standing: &str) -> String {
+    let base = if search { format!("{}{}", super::cli::SYSTEM, super::cli::SEARCH) } else { super::cli::SYSTEM.to_string() };
     let tools = if diag_tools().is_some() { crate::core::diag::SYSTEM_NOTE } else { "" };
-    base + tools + memory
+    base + tools + standing
 }
 
 /// Gets the CLI ready in the background (called when the window opens), so the first message doesn't wait

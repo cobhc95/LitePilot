@@ -80,7 +80,7 @@ fn mem_help(st: &St) -> String {
     match st.rows.get(st.cursor).map(|r| r.kind) {
         Some(Kind::Pick(Pick::MemMode)) => match shared_mode() {
             "off" => "Off: nothing is remembered or sent. \u{2190} \u{2192} change.".into(),
-            "engine" => "Engine: facts plus the AI's own memory. Claude saves personal facts in LitePilot's folder; Codex learns from saved chats at least an hour after they end, using some of your plan. API-key accounts have no engine and use Local. \u{2190} \u{2192} change.".into(),
+            "engine" => "Engine: facts plus the AI's own memory. Claude and ChatGPT add personal facts you mention to your encrypted list; Codex also learns from saved chats at least an hour after they end, using some of your plan. API-key accounts have no engine and use Local. \u{2190} \u{2192} change.".into(),
             _ => "Local: only your facts are sent with each chat. \u{2190} \u{2192} change.".into(),
         },
         Some(Kind::Pick(Pick::MemLimit)) => "The most facts LitePilot will keep. \u{2190} \u{2192} change; lowering it never deletes facts you already have.".into(),

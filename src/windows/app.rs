@@ -1,7 +1,7 @@
 ﻿//! Tray process, hotkeys, popup window. Idle means blocked in GetMessage: no timers, no polling.
 use super::util::*;
 use super::{actions_view, attach_win, bubbles, chip_menu, cli, code, history_view, http, images, key_badges, memory_store, rtf, secrets, settings, thumbs, tile_menu};
-use crate::core::{config::*, history, keys, memory, protocol::*, Msg};
+use crate::core::{config::*, history, keys, memory, need, protocol::*, Msg};
 use std::cell::Cell;
 
 mod hotkeys;
@@ -713,8 +713,10 @@ fn warm_engine() {
     let cwd = a.data.join("empty");
     let _ = std::fs::create_dir_all(&cwd);
     let mode = memory::effective(&p.memory, true);
-    cli::set_memory_tool(&mem_dir(), mode != "off");
-    cli::warm(&p.kind, &p.model, &p.effort, a.cfg.web_search, &memory_store::block_for_profile(&mem_dir(), &p.kind, mode), mode == "engine", &cwd);
+    memory_store::adopt_claude_memory(&a.data, &mem_dir());
+    // Warmed exactly as a fresh chat's first ordinary message will need it: no tools, no facts.
+    let standing = super::turn_plan::warm(mode, a.cfg.web_search, &mem_dir());
+    cli::warm(&p.kind, &p.model, &p.effort, false, &standing, mode == "engine", &cwd);
 }
 
 /// A window focus can be handed back to: another program's visible, normal (not minimized) top-level window,
@@ -844,30 +846,38 @@ fn send() {
     send_tip(a, true);
     let cancel = Arc::new(Cancel::default());
     a.cancel = Some(cancel.clone());
-    let (hwnd, gen, p, cwd, search, data) = (a.hwnd as usize, a.gen, a.cfg.active_profile().clone(), a.data.join("empty"), a.cfg.web_search, a.data.clone());
+    let (hwnd, gen, p, cwd, search, data, chat) = (a.hwnd as usize, a.gen, a.cfg.active_profile().clone(), a.data.join("empty"), a.cfg.web_search, a.data.clone(), a.chat.to_string_lossy().into_owned());
     let mem_dir = mem_dir();
     std::thread::spawn(move || {
         // Read and decrypted per message, never kept: a few hundred bytes at most.
         let mode = memory::effective(&p.memory, p.is_login());
-        cli::set_memory_tool(&mem_dir, mode != "off");
-        let mut mem = memory_store::block_for_profile(&mem_dir, &p.kind, mode);
-        // A big list sends only what relates to this message: in the prompt for the CLIs (their instructions stay put), in the instructions for API accounts.
-        let related = memory_store::relevant_for(&mem_dir, mode, &last_user);
         let sink = |e: Event| unsafe {
             PostMessageW(hwnd as HWND, WM_EVENT, gen as usize, Box::into_raw(Box::new(e)) as isize);
         };
         if p.is_login() {
-            // Diagnostic tools only for messages that need them; ordinary chat sends none.
-            let tools = crate::core::diag::route(&last_user);
-            if !tools.is_empty() { let _ = std::fs::write(data.join(super::diag::TURN_FILE), gen.to_string()); }
-            cli::set_diag_tools(tools);
-            let (mut extra, media) = crate::core::attach::for_cli(&last_user, &att);
-            extra += &related;
-            extra += &memory_store::lookup_note(&data, &mem_dir, &p.kind, mode);
-            cli::run(&p.kind, &p.model, &p.effort, search, &mem, mode == "engine", &req_msgs, &extra, &media, &cwd, &sink);
+            // Tools, facts and hints only when this message (or this chat) needs them; see core::need.
+            let (attached, media) = crate::core::attach::for_cli(&last_user, &att);
+            let mut asked = None;
+            loop {
+                let plan = super::turn_plan::plan(&p.kind, mode, search, &chat, &req_msgs, &last_user, &mem_dir, asked);
+                if super::resident::diag_on() { let _ = std::fs::write(data.join(super::diag::TURN_FILE), gen.to_string()); }
+                let extra = format!("{attached}{}", plan.extra);
+                // The first try may be answered with an escalation tag; it is held back and the message sent again.
+                let gate = super::turn_plan::Gate::new(asked.is_none(), &sink);
+                cli::run(&p.kind, &p.model, &p.effort, plan.search, &plan.standing, mode == "engine", &req_msgs, &extra, &media, &cwd, &|e| gate.pass(e));
+                match gate.asked() {
+                    Some(need::Ask::Search) if search && !plan.search => { super::turn_plan::mark_search(&chat); sink(Event::Status("Searching the web".into())); }
+                    Some(need::Ask::Memory) if mode != "off" => sink(Event::Status("Checking memory".into())),
+                    Some(_) => { gate.release(); break; }
+                    None => break,
+                }
+                asked = gate.asked();
+            }
         } else {
             let f = if p.kind == "anthropic" { ApiFormat::Anthropic } else { ApiFormat::OpenAi };
-            mem += &related;
+            // API accounts: standing facts while the list is small, otherwise only the related ones.
+            let mut mem = memory_store::block_for(&mem_dir, mode);
+            mem += &memory_store::relevant_for(&mem_dir, mode, &last_user);
             let r = build_request(f, &p.base_url, &p.model, &secrets::get(&p.id), &req_msgs, &att, &mem);
             http::stream(&r, f, &cancel.http, &sink);
         }
@@ -916,7 +926,7 @@ fn finish(a: &mut App) {
 /// Returns the facts that were saved, for a note.
 fn save_memory_lines(a: &mut App) -> Vec<String> {
     let p = a.cfg.active_profile().clone();
-    if p.kind != "codex" || memory::effective(&p.memory, true) == "off" { return vec![]; }
+    if !p.is_login() || memory::effective(&p.memory, true) == "off" { return vec![]; }
     let Some(m) = a.msgs.last_mut() else { return vec![] };
     if m.role != "assistant" { return vec![]; }
     let (kept, facts) = memory::split_remember(&m.text);

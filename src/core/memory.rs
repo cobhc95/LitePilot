@@ -154,21 +154,6 @@ fn stem(w: &str) -> String {
     w
 }
 
-/// For a list too big for the short block: how many facts there are, the newest few, and how to look up the rest
-/// with the `search_memory` tool. Costs a few hundred characters per conversation instead of the whole list.
-pub fn tool_block(list: &[String]) -> String {
-    if list.is_empty() { return String::new(); }
-    let mut s = format!("
-
-The user asked you to remember facts about them: {} are saved, too many to list here. Look them up with the search_memory tool (short keywords; try another phrasing if nothing comes back) before you answer anything that could involve the user, and before searching the web. recent_memories lists the newest. The most recent facts:", list.len());
-    for f in list.iter().rev().take(8) {
-        if s.len() + f.len() + 3 > 1200 { break; }
-        s += "
-- ";
-        s += f;
-    }
-    s
-}
 
 /// Lowercase word stems of a text, for matching a message against facts.
 pub fn stems(s: &str) -> Vec<String> {
@@ -248,6 +233,36 @@ pub fn relevant_block(list: &[String], message: &str) -> String {
         count += 1;
     }
     if count == 0 { String::new() } else { s }
+}
+
+/// Most facts sent with one message, and their size (about 300 tokens).
+const PER_MESSAGE: usize = 8;
+const PER_MESSAGE_CHARS: usize = 1200;
+
+/// The facts that relate to this message, best first, for a list of any size: nothing when no fact relates, so
+/// ordinary chat carries none. Sent with the message itself, never in the standing instructions.
+pub fn for_message(list: &[String], message: &str) -> String {
+    pick(list, ranked(list, message).into_iter().map(|(_, i)| i), PER_MESSAGE, PER_MESSAGE_CHARS)
+}
+
+/// When the model asked for the saved facts: the related ones first, then the newest, within the full budget.
+pub fn on_request(list: &[String], message: &str) -> String {
+    let order = ranked(list, message).into_iter().map(|(_, i)| i).chain((0..list.len()).rev());
+    pick(list, order, usize::MAX, BUDGET)
+}
+
+fn pick(list: &[String], order: impl Iterator<Item = usize>, most: usize, chars: usize) -> String {
+    let mut s = String::from(HEADER);
+    let mut seen: Vec<usize> = Vec::new();
+    for i in order {
+        if seen.len() >= most || seen.contains(&i) { continue; }
+        let f = &list[i];
+        if s.len() + f.len() + 3 > chars { break; }
+        s += "\n- ";
+        s += f;
+        seen.push(i);
+    }
+    if seen.is_empty() { String::new() } else { s }
 }
 
 /// Removes facts that repeat another: the same words, or one fact's words all inside a longer one. The longer
@@ -380,6 +395,17 @@ mod tests {
         assert!(b.contains("Ryzen"), "{b}");
         assert!(!b.contains("dark mode"));
         assert!(relevant_block(&l, "do you remember me?").contains("dark mode"));
+    }
+
+    #[test]
+    fn sends_only_related_facts_per_message() {
+        let l: Vec<String> = vec!["Lives in Leeds".into(), "Has a Ryzen 7 9700X desktop".into(), "Likes tea".into()];
+        assert_eq!(for_message(&l, "hi"), "");
+        assert_eq!(for_message(&l, "explain how rainbows form"), "");
+        let b = for_message(&l, "what are my pc specs");
+        assert!(b.contains("Ryzen") && !b.contains("Leeds"), "{b}");
+        let all = on_request(&l, "anything");
+        assert!(all.contains("Leeds") && all.contains("tea") && all.contains("Ryzen"));
     }
 
     #[test]

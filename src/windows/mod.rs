@@ -19,6 +19,7 @@ mod rtf;
 mod secrets;
 mod thumbs;
 mod tidy;
+mod turn_plan;
 mod settings;
 mod hover;
 mod updater;
