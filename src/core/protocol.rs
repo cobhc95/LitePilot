@@ -142,11 +142,15 @@ fn block_status(b: &Value) -> Option<Event> {
 
 pub fn tool_status(name: &str) -> String {
     let l = name.to_ascii_lowercase();
-    if l.contains("search") { "Searching the web".into() }
+    // LitePilot's own tool servers first: their names would otherwise read as raw "mcp__lp_system__sys".
+    if l.contains("lp_system") { "Checking your PC".into() }
+    else if l.contains("lp_memory") { "Checking memory".into() }
+    else if l.contains("search") { "Searching the web".into() }
     else if l.contains("fetch") || l.contains("read") || l.contains("open") { "Reading a page".into() }
     else if l.contains("bash") || l.contains("command") || l.contains("exec") { "Running a command".into() }
     else if name.is_empty() { "Working".into() }
-    else { format!("Using {name}") }
+    // Another MCP tool: its own short name, not the server prefix.
+    else { format!("Using {}", name.rsplit("__").next().unwrap_or(name).replace('_', " ")) }
 }
 
 /// The past-tense label for a step once the next one starts.
@@ -154,6 +158,8 @@ pub fn status_done(active: &str, secs: u64) -> String {
     match active {
         "Thinking" => format!("Thought for {}s", secs.max(1)),
         "Searching the web" => "Searched the web".into(),
+        "Checking your PC" => "Checked your PC".into(),
+        "Checking memory" => "Checked memory".into(),
         "Reading a page" => "Read a page".into(),
         "Running a command" => "Ran a command".into(),
         "Recalling memory" => "Recalled memory".into(),

@@ -1389,7 +1389,9 @@ pub fn run(show_now: bool) {
         set_text(a.btn, "Settings");
         a.send_btn = child("BUTTON", BS_OWNERDRAW as u32, hwnd, ID_SEND, a.font);
         set_text(a.send_btn, "Send");
-        a.view = child("RICHEDIT50W", ES_MULTI | ES_READ | ES_NOHIDE | ES_AUTOV, hwnd, 0, a.font);
+        // Clip siblings: the status spinner and stat line are drawn between paints, and must never land on the
+        // typing box that sits over the bottom of the chat.
+        a.view = child("RICHEDIT50W", ES_MULTI | ES_READ | ES_NOHIDE | ES_AUTOV | WS_CLIPSIBLINGS, hwnd, 0, a.font);
         a.input = child("RICHEDIT50W", WS_VSCROLL | ES_MULTI | ES_AUTOV, hwnd, 0, a.font);
         SendMessageW(a.input, EM_SETTEXTMODE_, 1, 0); // plain text
         SendMessageW(a.view, EM_EXLIMITTEXT_, 0, 64 * 1024 * 1024);
