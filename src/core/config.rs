@@ -47,7 +47,8 @@ pub fn parse_hex(s: &str) -> Option<u32> {
     (h.len() == 6 && h.is_ascii()).then(|| u32::from_str_radix(h, 16).ok()).flatten()
 }
 
-fn mix(a: u32, b: u32, t_pct: u32) -> u32 {
+/// Blends two 0xBBGGRR colors channel by channel: `t_pct` 0 is all `a`, 100 is all `b`.
+pub fn mix(a: u32, b: u32, t_pct: u32) -> u32 {
     let ch = |shift: u32| (((a >> shift) & 255) * (100 - t_pct) + ((b >> shift) & 255) * t_pct) / 100;
     (ch(16) << 16) | (ch(8) << 8) | ch(0)
 }
@@ -287,8 +288,7 @@ mod tests {
     }
     #[test]
     fn invalid_custom_colors_fall_back() {
-        let mut c = Config::default();
-        c.palette = "Custom".into();
+        let mut c = Config { palette: "Custom".into(), ..Default::default() };
         assert!(c.palette_colors().is_some());
         c.custom[0] = "bad".into();
         assert!(c.palette_colors().is_none());

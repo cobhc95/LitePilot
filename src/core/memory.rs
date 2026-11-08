@@ -177,7 +177,7 @@ pub fn stems(s: &str) -> Vec<String> {
     for w in s.to_lowercase().split(|c: char| !c.is_alphanumeric()) {
         if (w.len() < 2 && !w.chars().all(|c| c.is_ascii_digit())) || w.is_empty() || STOP.contains(&w) { continue; }
         let w = stem(w);
-        if !out.iter().any(|x| *x == w) { out.push(w); }
+        if !out.contains(&w) { out.push(w); }
     }
     out
 }

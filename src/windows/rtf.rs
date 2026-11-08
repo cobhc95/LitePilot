@@ -371,7 +371,7 @@ const BUBBLE_PAD: usize = 150;
 fn text_twips(font: &str, size: u32, text: &str) -> usize {
     use windows_sys::Win32::Foundation::SIZE;
     use windows_sys::Win32::Graphics::Gdi::*;
-    let name: Vec<u16> = font.encode_utf16().chain(Some(0)).collect();
+    let name = super::util::w(font);
     unsafe {
         let dc = CreateCompatibleDC(std::ptr::null_mut());
         let f = CreateFontW(-(size as i32 * 10), 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, name.as_ptr());

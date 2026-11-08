@@ -241,7 +241,7 @@ pub fn key(msg: u32, wp: WPARAM) -> bool {
                 }
                 0x56 => {
                     if m.sel { m.query.clear(); m.sel = false; }
-                    m.query.push_str(&super::settings::clipboard_text());
+                    m.query.push_str(&clipboard_text());
                     m.query = m.query.chars().take(24).collect();
                     m.refresh();
                 }
@@ -269,13 +269,6 @@ pub fn key(msg: u32, wp: WPARAM) -> bool {
 }
 
 // ---- Drawing ----
-
-fn mix(x: u32, y: u32, t: u32) -> u32 {
-    (0..3).fold(0u32, |acc, i| {
-        let (a, b) = ((x >> (8 * i)) & 255, (y >> (8 * i)) & 255);
-        acc | (((a * (100 - t) + b * t) / 100) << (8 * i))
-    })
-}
 
 unsafe fn text(dc: HDC, t: &str, mut r: RECT, color: u32, flags: u32) {
     SetTextColor(dc, color);

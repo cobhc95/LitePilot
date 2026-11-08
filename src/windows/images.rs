@@ -83,6 +83,7 @@ unsafe impl Sync for Api {}
 #[repr(C)]
 struct StartupInput { version: u32, callback: P, no_thread: i32, no_codecs: i32 }
 
+#[allow(clippy::missing_transmute_annotations)] // each target type is spelled on its binding
 fn api() -> Option<Api> {
     static API: OnceLock<Option<Api>> = OnceLock::new();
     *API.get_or_init(|| unsafe {
@@ -122,6 +123,7 @@ fn api() -> Option<Api> {
 }
 
 /// Saves a clipboard DIB (header, colors, pixels) as a PNG file. GDI+ is the one the pictures already use.
+#[allow(clippy::missing_transmute_annotations)]
 pub fn dib_to_png(dib: &[u8], path: &std::path::Path) -> bool {
     if dib.len() < 40 || api().is_none() { return false; }
     unsafe {
@@ -333,6 +335,7 @@ unsafe fn release(stream: P) {
 
 /// Decodes `bytes` into a new w×h bitmap, either filling it (cropping the middle) or fitting
 /// inside it, then frees the decoded picture. Only the small bitmap is kept.
+#[allow(clippy::too_many_arguments)]
 unsafe fn render(a: &Api, bytes: &[u8], px: (u32, u32), w: i32, h: i32, crop: bool, like: HDC, bg: u32) -> HBITMAP {
     let stream = (a.mem_stream)(bytes.as_ptr(), bytes.len() as u32);
     if stream.is_null() { return std::ptr::null_mut(); }
@@ -395,10 +398,10 @@ unsafe fn shrink(bytes: &[u8], px: (u32, u32)) -> Option<(Vec<u8>, (u32, u32))> 
     let gp = LoadLibraryW(w("gdiplus.dll").as_ptr());
     let ole = LoadLibraryW(w("ole32.dll").as_ptr());
     if gp.is_null() || ole.is_null() { return None; }
-    let thumb_fn: unsafe extern "system" fn(P, u32, u32, *mut P, P, P) -> i32 = std::mem::transmute(GetProcAddress(gp, b"GdipGetImageThumbnail ".as_ptr())?);
-    let save: unsafe extern "system" fn(P, P, *const [u8; 16], P) -> i32 = std::mem::transmute(GetProcAddress(gp, b"GdipSaveImageToStream ".as_ptr())?);
-    let new_stream: unsafe extern "system" fn(P, i32, *mut P) -> i32 = std::mem::transmute(GetProcAddress(ole, b"CreateStreamOnHGlobal ".as_ptr())?);
-    let hglobal_of: unsafe extern "system" fn(P, *mut P) -> i32 = std::mem::transmute(GetProcAddress(ole, b"GetHGlobalFromStream ".as_ptr())?);
+    let thumb_fn: unsafe extern "system" fn(P, u32, u32, *mut P, P, P) -> i32 = std::mem::transmute(GetProcAddress(gp, c"GdipGetImageThumbnail".as_ptr().cast())?);
+    let save: unsafe extern "system" fn(P, P, *const [u8; 16], P) -> i32 = std::mem::transmute(GetProcAddress(gp, c"GdipSaveImageToStream".as_ptr().cast())?);
+    let new_stream: unsafe extern "system" fn(P, i32, *mut P) -> i32 = std::mem::transmute(GetProcAddress(ole, c"CreateStreamOnHGlobal".as_ptr().cast())?);
+    let hglobal_of: unsafe extern "system" fn(P, *mut P) -> i32 = std::mem::transmute(GetProcAddress(ole, c"GetHGlobalFromStream".as_ptr().cast())?);
     let src = (a.mem_stream)(bytes.as_ptr(), bytes.len() as u32);
     if src.is_null() { return None; }
     let mut img = std::ptr::null_mut();
@@ -495,6 +498,7 @@ pub unsafe fn smooth_round(dc: HDC, r: &RECT, fill: Option<(u32, u32)>, border: 
 /// A smooth, anti-aliased loading ring with a soft glow: a faint track and a comet whose tail fades,
 /// its head at `head_deg` (clockwise from 3 o'clock). Draws straight onto `dc` (no extra memory).
 /// Returns false if GDI+ isn't available, so the caller can draw its plain fallback.
+#[allow(clippy::too_many_arguments)]
 pub unsafe fn spinner(dc: HDC, cx: f32, cy: f32, r: f32, width: f32, head_deg: f32, track: u32, color: u32) -> bool {
     let Some(a) = api() else { return false };
     let argb = |c: u32, alpha: u32| (alpha << 24) | ((c & 255) << 16) | (c & 0xFF00) | ((c >> 16) & 255);
@@ -733,7 +737,7 @@ pub fn fit_viewer(main: HWND) {
 }
 
 fn viewer_refresh(id: usize) {
-    let current = VIEWER.with_borrow(|v| v.as_ref().map(|v| GALLERIES.with_borrow(|g| g.get(v.gid).and_then(|x| x.imgs.get(v.index).copied()))).flatten());
+    let current = VIEWER.with_borrow(|v| v.as_ref().and_then(|v| GALLERIES.with_borrow(|g| g.get(v.gid).and_then(|x| x.imgs.get(v.index).copied()))));
     if current == Some(id) { show_index(0); }
 }
 

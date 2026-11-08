@@ -1,11 +1,35 @@
 use std::path::PathBuf;
 use windows_sys::Win32::Foundation::HWND;
+use windows_sys::Win32::System::DataExchange::{CloseClipboard, GetClipboardData, OpenClipboard};
+use windows_sys::Win32::System::Memory::{GlobalLock, GlobalUnlock};
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
+
+pub use crate::core::config::mix;
 
 pub fn w(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(Some(0)).collect()
 }
 
+/// The clipboard's text, up to `max` UTF-16 units; empty when there is none.
+pub fn clipboard(max: usize) -> String {
+    unsafe {
+        if OpenClipboard(std::ptr::null_mut()) == 0 { return String::new(); }
+        let h = GetClipboardData(13); // CF_UNICODETEXT
+        let p = if h.is_null() { std::ptr::null() } else { GlobalLock(h) as *const u16 };
+        let mut s = String::new();
+        if !p.is_null() {
+            let mut n = 0;
+            while n < max && *p.add(n) != 0 { n += 1; }
+            s = String::from_utf16_lossy(std::slice::from_raw_parts(p, n));
+            GlobalUnlock(h);
+        }
+        CloseClipboard();
+        s
+    }
+}
+
+/// One line of clipboard text for a field or search box (line breaks removed, up to 4096 units).
+pub fn clipboard_text() -> String { clipboard(4096).replace(['\r', '\n'], "") }
 pub fn get_text(h: HWND) -> String {
     unsafe {
         let n = GetWindowTextLengthW(h);
@@ -125,7 +149,7 @@ pub fn silence_beeps() {
         use windows_sys::Win32::System::Memory::{VirtualProtect, PAGE_EXECUTE_READWRITE};
         let m = LoadLibraryW(w("user32.dll").as_ptr());
         if m.is_null() { return; }
-        let Some(f) = GetProcAddress(m, b"MessageBeep\0".as_ptr()) else { return };
+        let Some(f) = GetProcAddress(m, c"MessageBeep".as_ptr().cast()) else { return };
         let p = f as *mut u8;
         let mut old = 0;
         if VirtualProtect(p as _, 6, PAGE_EXECUTE_READWRITE, &mut old) == 0 { return; }

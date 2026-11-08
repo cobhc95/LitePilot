@@ -79,16 +79,13 @@ mod tests {
     use super::*;
     #[test]
     fn round_trip_leaves_out_window_positions() {
-        let mut c = Config::default();
-        c.window_pos = Some((10, 20));
-        c.theme = "light".into();
+        let c = Config { window_pos: Some((10, 20)), theme: "light".into(), ..Default::default() };
         let b = from_json(&to_json(&c, &["likes tea".into()], "- PC: Zorblax\n")).unwrap();
         assert_eq!(b.memories, ["likes tea"]);
         assert_eq!(b.claude_memory, "- PC: Zorblax\n");
         let s = b.settings.unwrap();
         assert!(s.get("window_x").is_none());
-        let mut here = Config::default();
-        here.window_pos = Some((1, 2));
+        let mut here = Config { window_pos: Some((1, 2)), ..Default::default() };
         here.profiles.push(crate::core::config::Profile { id: "api-1".into(), name: "Mine".into(), kind: "openai".into(), base_url: String::new(), model: String::new(), effort: String::new(), memory: "local".into() });
         let m = merge_settings(&here, &s);
         assert_eq!(m.theme, "light");

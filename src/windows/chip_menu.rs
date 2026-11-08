@@ -151,7 +151,7 @@ unsafe fn draw_custom(dc: HDC, ic: &Ic, x: i32, y: i32, color: u32) {
 
 /// The leading model generation of a label: 6 for "6.1-SOL" and "6-ASTRA", 5 for "5.6-LUNA", None for "HAIKU".
 fn generation(label: &str) -> Option<u32> {
-    label.split(|c: char| c == '.' || c == '-').next().and_then(|n| n.parse().ok())
+    label.split(['.', '-']).next().and_then(|n| n.parse().ok())
 }
 
 fn rank(label: &str) -> u32 {
@@ -214,9 +214,8 @@ impl Menu {
         let typing = !self.query.trim().is_empty();
         let mut items: Vec<Item> = hits.iter().map(|i| Item::Model(*i)).collect();
         items.push(Item::Effort);
-        if !typing {
-            if app().cfg.profiles.len() > 1 { items.push(Item::Account); }
-        }
+        if !typing
+            && app().cfg.profiles.len() > 1 { items.push(Item::Account); }
         self.items = items;
         self.cursor = if keep_current {
             let (cur, active) = (&app().cfg.active_profile().model, &app().cfg.active);
@@ -451,7 +450,7 @@ pub fn key(msg: u32, wp: WPARAM) {
     if msg == WM_CHAR || msg == WM_SYSCHAR {
         let c = char::from_u32(wp as u32).filter(|c| !c.is_control());
         let Some(c) = c else { return };
-        let empty = MENU.with_borrow(|m| m.as_ref().map_or(true, |m| m.query.is_empty()));
+        let empty = MENU.with_borrow(|m| m.as_ref().is_none_or(|m| m.query.is_empty()));
         if empty && ('1'..='4').contains(&c) {
             let n = c as usize - '1' as usize;
             let hit = MENU.with_borrow(|m| m.as_ref().and_then(|m| m.items.iter().filter_map(|it| if let Item::Model(i) = it { Some(*i) } else { None }).nth(n)));
@@ -482,7 +481,7 @@ pub fn key(msg: u32, wp: WPARAM) {
                 }
                 0x56 => {
                     if m.sel { m.query.clear(); m.sel = false; }
-                    m.query.push_str(&super::settings::clipboard_text());
+                    m.query.push_str(&clipboard_text());
                     m.query = m.query.chars().take(28).collect();
                     m.refresh(false);
                 }
@@ -516,13 +515,6 @@ pub fn key(msg: u32, wp: WPARAM) {
 }
 
 // ---- Drawing ----
-
-fn mix(x: u32, y: u32, t: u32) -> u32 {
-    (0..3).fold(0u32, |acc, i| {
-        let (a, b) = ((x >> (8 * i)) & 255, (y >> (8 * i)) & 255);
-        acc | (((a * (100 - t) + b * t) / 100) << (8 * i))
-    })
-}
 
 unsafe fn text(dc: HDC, t: &str, mut r: RECT, color: u32, flags: u32) {
     SetTextColor(dc, color);

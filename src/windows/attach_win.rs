@@ -134,11 +134,11 @@ pub fn paste() -> bool {
 
 unsafe fn paths(h: HANDLE) -> Vec<PathBuf> {
     let n = DragQueryFileW(h, u32::MAX, std::ptr::null_mut(), 0);
-    (0..n).filter_map(|i| {
+    (0..n).map(|i| {
         let len = DragQueryFileW(h, i, std::ptr::null_mut(), 0) as usize;
         let mut b = vec![0u16; len + 1];
         DragQueryFileW(h, i, b.as_mut_ptr(), len as u32 + 1);
-        Some(PathBuf::from(String::from_utf16_lossy(&b[..len])))
+        PathBuf::from(String::from_utf16_lossy(&b[..len]))
     }).collect()
 }
 

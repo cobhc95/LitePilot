@@ -58,7 +58,7 @@ pub fn take() -> String {
 pub fn has() -> bool { ITEMS.with_borrow(|v| !v.is_empty()) }
 
 pub fn clear() {
-    if ITEMS.with_borrow_mut(|v| std::mem::take(v)).is_empty() { return; }
+    if ITEMS.with_borrow_mut(std::mem::take).is_empty() { return; }
     super::app::relayout();
 }
 

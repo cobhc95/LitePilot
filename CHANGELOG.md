@@ -2,6 +2,12 @@
 
 Earlier versions are described on the [GitHub releases page](https://github.com/cobhc95/LitePilot/releases).
 
+## 0.1.21
+
+- **Tidier code, same behavior.** The two largest files are split along their existing sections so each part can be read on its own: the popup (`app.rs`, 2,700 lines) into `app/` (RichEdit plumbing, painting, hotkeys, scrolling, input controls, window procedure) and Settings (`settings.rs`, 2,000 lines) into `settings/` (picker, pages, actions, keyboard, painting). Only code moved; nothing was rewritten.
+- One copy each of the color blend, clipboard reader and wide-string helpers (there were four, two and three). Literal NUL bytes in the source replaced with `c"..."` strings. Zero clippy warnings (about 50 before).
+- Includes everything in 0.1.20, which was not released on its own.
+
 ## 0.1.20
 
 - **PC diagnostics on demand.** Eleven read-only tools (`sys`, `lang`, `disk`, `proc`, `net`, `events`, `sec`, `apps`, `file`, `reg`, `dev`), each with a `what` choice, cover about 60 checks, such as installed keyboard layouts, slow-PC causes, port owners, crashes, Defender status and git status.
