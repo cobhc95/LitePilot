@@ -138,6 +138,9 @@ fn memory_tool() -> Option<(String, String)> {
 static DIAG: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
 pub fn set_diag_tools(cats: Vec<&'static str>) { *DIAG.lock().unwrap_or_else(|e| e.into_inner()) = cats; }
 pub fn diag_on() -> bool { diag_tools().is_some() }
+/// The running CLI's process id, for tests that check it isn't restarted between messages.
+#[cfg(test)]
+pub fn pid() -> Option<u32> { SERVER.lock().ok()?.as_ref().map(|s| s.child.id()) }
 fn diag_tools() -> Option<String> {
     let d = DIAG.lock().unwrap_or_else(|e| e.into_inner());
     (!d.is_empty()).then(|| d.join(","))
@@ -227,7 +230,18 @@ fn turn_claude(s: &mut Server, prompt: &str, media: &[PathBuf], sink: &dyn Fn(Ev
     let mut reply = String::new();
     loop {
         let Some(l) = s.line() else { sink(Event::Error(STOPPED.into())); return None };
-        if let Some(n) = cli_tokens(&l) { sink(Event::Tokens(n)); }
+        // The reply is finished when the model's last message ends. Claude Code then writes a summary of the turn
+        // with another model call (about 1.5 s from the second message on) before its `result` line; that is
+        // read off here without keeping the reply waiting.
+        if let Some((tokens, end)) = message_end(&l) {
+            sink(Event::Tokens(tokens));
+            if end {
+                sink(Event::Done);
+                while let Some(l) = s.line() { if matches!(parse_claude_line(&l), Some(Event::Done | Event::Error(_))) { break; } }
+                return Some(reply);
+            }
+            continue;
+        }
         match parse_claude_line(&l) {
             Some(Event::Text(t)) => { reply.push_str(&t); sink(Event::Text(t)); }
             Some(Event::Done) => { sink(Event::Done); return Some(reply); }
@@ -236,6 +250,19 @@ fn turn_claude(s: &mut Server, prompt: &str, media: &[PathBuf], sink: &dyn Fn(Ev
             None => {}
         }
     }
+}
+
+/// Claude's `message_delta`: the tokens that model call used, and whether it ended the reply (anything but a
+/// pause for a tool).
+fn message_end(line: &str) -> Option<(u64, bool)> {
+    if !line.contains("\"message_delta\"") { return None; }
+    let v: Value = serde_json::from_str(line).ok()?;
+    let e = &v["event"];
+    if e["type"] != "message_delta" { return None; }
+    let u = &e["usage"];
+    let n = ["input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens"].iter().filter_map(|k| u[*k].as_u64()).sum();
+    let stop = e["delta"]["stop_reason"].as_str().unwrap_or("");
+    Some((n, !stop.is_empty() && stop != "tool_use" && stop != "pause_turn"))
 }
 
 /// The conversation inside a running Codex: made once, then reused for every message that follows on from it.

@@ -101,7 +101,7 @@ pub fn run_action(id: &str) {
     let a = app();
     unsafe {
         match id {
-            "new_chat" => { close_views(); let p = history::new_chat_path(&a.data.join("chats")); open_chat(p); SetFocus(a.input); }
+            "new_chat" | "new_chat_2" => { close_views(); let p = history::new_chat_path(&a.data.join("chats")); open_chat(p); SetFocus(a.input); }
             "focus_input" => { close_views(); SetFocus(a.input); }
             "focus_chat" => { close_views(); SetFocus(a.view); }
             "history" => { if history_view::is_open() { close_views(); SetFocus(a.input); } else { history_view::open(); } }

@@ -115,6 +115,56 @@ impl<'a> Gate<'a> {
     pub fn release(&self) { self.flush(); (self.sink)(Event::Done); }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::protocol::request_turns;
+    use std::time::Instant;
+
+    /// Drives the real plan + engine path for a short chat and prints, per message, the time to the first word,
+    /// the total time and whether the engine process was restarted. LITEPILOT_E2E_KIND=claude|codex.
+    #[test]
+    #[ignore = "talks to the signed-in Claude Code or Codex; quit LitePilot first"]
+    fn e2e_reply_timing() {
+        let kind = std::env::var("LITEPILOT_E2E_KIND").unwrap_or_else(|_| "claude".into());
+        let (model, effort) = if kind == "claude" { ("haiku", "low") } else { ("gpt-6-luna", "low") };
+        let root = std::env::temp_dir().join(format!("lp-e2e-{}", std::process::id()));
+        // LITEPILOT_E2E_MEM: a real memory folder to read (never written), to test with real saved facts.
+        let (cwd, mem) = (root.join("empty"), std::env::var("LITEPILOT_E2E_MEM").map(std::path::PathBuf::from).unwrap_or(root.join("mem")));
+        std::fs::create_dir_all(&cwd).unwrap();
+        std::fs::create_dir_all(&mem).unwrap();
+        let standing = warm("engine", true, &mem);
+        cli::warm(&kind, model, effort, false, &standing, true, &cwd, false);
+        std::thread::sleep(std::time::Duration::from_secs(6));
+        let mut msgs: Vec<Msg> = vec![];
+        for text in ["hi", "how are you today?", "explain recursion in one sentence", "thanks!"] {
+            let pid = super::super::resident::pid();
+            msgs.push(Msg::new("user", text));
+            let req = request_turns(&msgs);
+            let t0 = Instant::now();
+            let p = plan(&kind, "engine", true, "chat", &req, text, &mem, None);
+            let first = Cell::new(None);
+            let reply = RefCell::new(String::new());
+            let phases = RefCell::new(Vec::<String>::new());
+            let sink = |e: Event| match e {
+                Event::Text(t) => { if first.get().is_none() { first.set(Some(t0.elapsed().as_millis())); } reply.borrow_mut().push_str(&t); }
+                Event::Phase(s) | Event::Status(s) => phases.borrow_mut().push(format!("{s}@{}", t0.elapsed().as_millis())),
+                Event::Done => phases.borrow_mut().push(format!("shown done@{}", t0.elapsed().as_millis())),
+                Event::Error(m) => panic!("{m}"),
+                _ => {}
+            };
+            cli::run(&kind, model, effort, p.search, &p.standing, true, &req, &p.extra, &[], &cwd, &sink);
+            let after = super::super::resident::pid();
+            let r = reply.borrow().chars().take(40).collect::<String>().replace('\n', " ");
+            println!("{text:?}: first word {:?} ms, engine free {} ms, restarted {}, search {}, extra {} chars, steps {:?}, reply {r:?}",
+                first.get(), t0.elapsed().as_millis(), pid != after, p.search, p.extra.len(), phases.borrow());
+            msgs.push(Msg::new("assistant", reply.into_inner()));
+        }
+        cli::reset();
+        let _ = std::fs::remove_dir_all(root);
+    }
+}
+
 /// What a fresh chat starts with, for warming the CLI before the first message: no tools, nothing extra.
 pub fn warm(mode: &str, search_allowed: bool, mem_dir: &Path) -> String {
     cli::set_diag_tools(vec![]);

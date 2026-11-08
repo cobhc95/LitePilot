@@ -4,6 +4,7 @@
 /// (id, label shown in Settings and the help list, default keys).
 pub const ACTIONS: &[(&str, &str, &str)] = &[
     ("new_chat", "New chat", "Ctrl+Shift+O"),
+    ("new_chat_2", "New chat (second key)", "Ctrl+N"),
     ("focus_input", "Go to the typing box", "Ctrl+L"),
     ("focus_chat", "Go to the chat", "Ctrl+J"),
     ("history", "Previous chats", "Ctrl+H"),
@@ -103,10 +104,11 @@ mod tests {
     }
     #[test]
     fn custom_keys_override_and_clear() {
-        let c = vec![("new_chat".to_string(), "Ctrl+N".to_string()), ("help".to_string(), String::new())];
+        let c = vec![("new_chat".to_string(), "Ctrl+Shift+N".to_string()), ("help".to_string(), String::new())];
         let r = resolve(&c);
-        assert_eq!(format(&r.iter().find(|x| x.0 == "new_chat").unwrap().1), "Ctrl+N");
+        assert_eq!(format(&r.iter().find(|x| x.0 == "new_chat").unwrap().1), "Ctrl+Shift+N");
         assert!(!r.iter().any(|x| x.0 == "help"));
-        assert_eq!(clash(&c, "on_top", &parse("Ctrl+N").unwrap()), Some("New chat"));
+        assert_eq!(clash(&c, "on_top", &parse("Ctrl+Shift+N").unwrap()), Some("New chat"));
+        assert_eq!(format(&resolve(&[]).iter().find(|x| x.0 == "new_chat_2").unwrap().1), "Ctrl+N");
     }
 }

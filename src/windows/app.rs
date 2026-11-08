@@ -1412,7 +1412,7 @@ pub fn run(show_now: bool) {
             (a.mic_btn, w(&format!("Dictate with Windows voice typing ({})", k("dictate")))),
             (a.header, w("Choose account, model, and effort (Ctrl+M)")),
             (a.history_btn, w("Previous chats (Ctrl+H)")),
-            (a.new_btn, w("New chat (Ctrl+Shift+O)")),
+            (a.new_btn, w("New chat (Ctrl+N or Ctrl+Shift+O)")),
             (a.pin_btn, pin_text),
             (a.btn, w(&format!("Quick menu ({})", keys::resolve(&a.cfg.keys).into_iter().find(|x| x.0 == "tile_menu").map_or("unbound".to_string(), |x| keys::format(&x.1))))),
             (a.send_btn, w("Send (Enter)")),
