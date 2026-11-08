@@ -13,7 +13,9 @@ use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 /// One-shot timer on the main window that shows the labels once Ctrl has been held long enough.
 pub const TIMER: usize = 40;
-const DELAY_MS: u32 = 350;
+// Short enough to feel immediate; any other key pressed with Alt cancels the labels (see app::alt_hook),
+// so Alt shortcuts don't flash them.
+const DELAY_MS: u32 = 120;
 
 thread_local! {
     static OVERLAY: Cell<HWND> = const { Cell::new(std::ptr::null_mut()) };
@@ -53,11 +55,15 @@ pub fn show() {
             badges.push((r.left - wr.left, r.top - wr.top - 6, text));
         }
     }
+    // The quick menu, if open, draws its own labels on its tiles.
+    if super::tile_menu::is_open() { SHOWING.set(true); super::tile_menu::redraw(); }
     if badges.is_empty() { return; }
     let o = overlay(a.hwnd);
     BADGES.with_borrow_mut(|b| *b = badges);
     unsafe {
-        SetWindowPos(o, if a.cfg.on_top { HWND_TOPMOST } else { std::ptr::null_mut() }, wr.left, wr.top, wr.right - wr.left, wr.bottom - wr.top, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        // Always above everything: LitePilot's own keep-on-top handling lifts the main window to the very top
+        // whenever its stacking changes, which used to bury the labels under it. See also lift().
+        SetWindowPos(o, HWND_TOPMOST, wr.left, wr.top, wr.right - wr.left, wr.bottom - wr.top, SWP_NOACTIVATE | SWP_SHOWWINDOW);
         render(o, &wr);
     }
     SHOWING.set(true);
@@ -66,9 +72,22 @@ pub fn show() {
 /// Removes the labels, if they are showing.
 pub fn hide() {
     if !SHOWING.replace(false) { return; }
-    unsafe { ShowWindow(OVERLAY.get(), SW_HIDE); }
+    let o = OVERLAY.get();
+    if !o.is_null() { unsafe { ShowWindow(o, SW_HIDE); } }
     BADGES.with_borrow_mut(|b| b.clear());
+    if super::tile_menu::is_open() { super::tile_menu::redraw(); }
 }
+
+/// Puts the labels back above the main window, after the main window has moved itself to the top.
+pub fn lift() {
+    let o = OVERLAY.get();
+    if SHOWING.get() && !o.is_null() {
+        unsafe { SetWindowPos(o, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE); }
+    }
+}
+
+/// True while Alt is held long enough for the labels to show.
+pub fn showing() -> bool { SHOWING.get() }
 
 /// Stops everything: the delay, and any labels showing. Used when the window hides or loses focus,
 /// since Ctrl's release may never arrive then.

@@ -29,7 +29,7 @@ impl Tile {
             Tile::Top => ("\u{E718}", "On top", "Keep on top", "on_top", "keep on top pin"),
             Tile::Copy => ("\u{E8C8}", "Copy", "Copy the last reply", "copy_reply", "copy last reply"),
             Tile::Dictate => ("\u{E720}", "Dictate", "Mic dictation button", "dictate", "dictation dictate mic microphone voice"),
-            Tile::Taskbar => ("\u{E7C4}", "Taskbar", "Show in taskbar and Alt+Tab", "", "taskbar alt tab show"),
+            Tile::Taskbar => ("\u{E7C4}", "Taskbar", "Show in taskbar and Alt+Tab", "taskbar", "taskbar alt tab show"),
             Tile::Settings => ("\u{E713}", "Settings", "Settings", "settings", "settings preferences options"),
             Tile::Keys => ("\u{E765}", "Keys", "Shortcuts", "help", "shortcuts keys keyboard help"),
         }
@@ -156,7 +156,7 @@ pub fn close() {
     }
 }
 
-fn redraw() {
+pub fn redraw() {
     // Measure under the borrow, but move/repaint the window after it is released: those calls can send
     // messages (such as a paint) straight back into this menu, which would find it still borrowed.
     let size = MENU.with_borrow_mut(|m| m.as_mut().map(|m| (m.hwnd, m.layout())));
@@ -356,6 +356,22 @@ unsafe fn paint(h: HWND, dc: HDC, m: &Menu) {
             // A small dot marks a switch that is on.
             let d = RECT { left: r.right - s(14), top: r.top + s(7), right: r.right - s(8), bottom: r.top + s(13) };
             round(dc, &d, if on { a.theme.accent } else { a.theme.bubble }, None, s(6));
+        }
+        // Holding Alt: each tile's shortcut on a tag across its top.
+        let act = t.info().3;
+        if super::key_badges::showing() && !act.is_empty() {
+            let keys_text = k(act);
+            if !keys_text.is_empty() {
+                let f = CreateFontW(-s(9), 0, 0, 0, 600, 0, 0, 0, 1, 0, 0, 5, 0, w(&a.theme.font).as_ptr());
+                let o = SelectObject(dc, f as _);
+                let width = (tw(dc, &keys_text) + s(8)).min(r.right - r.left);
+                let cx = (r.left + r.right) / 2;
+                let tag = RECT { left: cx - width / 2, top: r.top + s(2), right: cx + width / 2, bottom: r.top + s(17) };
+                round(dc, &tag, a.theme.accent, None, s(5));
+                text(dc, &keys_text, tag, a.theme.bg, DT_CENTER);
+                SelectObject(dc, o);
+                DeleteObject(f as _);
+            }
         }
     }
     if m.vis.is_empty() {

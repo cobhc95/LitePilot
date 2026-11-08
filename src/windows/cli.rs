@@ -125,9 +125,50 @@ pub fn codex_models() -> Vec<String> {
     let path = env_path("USERPROFILE", r".codex\models_cache.json");
     let Some(v) = std::fs::read_to_string(path).ok().and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok()) else { return vec![] };
     v["models"].as_array().map(|a| a.iter()
+        .filter(|m| m["visibility"].as_str() != Some("hide"))
         .filter_map(|m| m["slug"].as_str())
-        .filter(|s| !s.contains("auto-review"))
+        // Terra is listed by Codex but doesn't work, so it isn't offered.
+        .filter(|s| !s.contains("auto-review") && !s.contains("terra"))
         .map(String::from).take(15).collect()).unwrap_or_default()
+}
+
+/// Asks Codex for the ChatGPT plan's usage in the background (a short-lived `codex app-server`), unless a check
+/// is already running. The answer lands in core::usage; the model menu picks it up while it is open.
+pub fn refresh_codex_usage() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static BUSY: AtomicBool = AtomicBool::new(false);
+    if BUSY.swap(true, Ordering::SeqCst) { return; }
+    std::thread::spawn(|| { fetch_codex_usage(); BUSY.store(false, Ordering::SeqCst); });
+}
+
+fn fetch_codex_usage() -> Option<()> {
+    use std::io::{BufRead, BufReader, Write};
+    use std::process::Stdio;
+    let exe = find("codex")?;
+    let mut child = hidden(exe.to_str()?).arg("app-server").current_dir(std::env::temp_dir())
+        .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().ok()?;
+    let mut stdin = child.stdin.take()?;
+    let out = BufReader::new(child.stdout.take()?);
+    // Lines arrive on their own thread, so a server that never answers can't hold this one up.
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    std::thread::spawn(move || { for l in out.lines().map_while(Result::ok) { if tx.send(l).is_err() { break; } } });
+    let wait_for = |id: &str| {
+        let end = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while let Some(left) = end.checked_duration_since(std::time::Instant::now()) {
+            match rx.recv_timeout(left) {
+                Ok(l) => { crate::core::usage::observe(&l); if l.contains(id) { return true; } }
+                Err(_) => return false,
+            }
+        }
+        false
+    };
+    let ok = stdin.write_all(b"{\"id\":1,\"method\":\"initialize\",\"params\":{\"clientInfo\":{\"name\":\"LitePilot\",\"version\":\"1\"}}}\n").is_ok()
+        && wait_for("\"id\":1")
+        && stdin.write_all(b"{\"method\":\"initialized\"}\n{\"id\":2,\"method\":\"account/rateLimits/read\",\"params\":{}}\n").is_ok()
+        && wait_for("\"id\":2");
+    let _ = child.kill();
+    let _ = child.wait();
+    ok.then_some(())
 }
 
 pub fn install_url(kind: &str) -> &'static str {

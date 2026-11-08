@@ -13,7 +13,7 @@ use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::*;
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
-const VISIBLE_MODELS: usize = 6;
+const VISIBLE_MODELS: usize = 8;
 
 #[derive(Clone, Copy, PartialEq)]
 enum Item { Model(usize), Effort, Account }
@@ -22,13 +22,47 @@ struct Menu {
     hwnd: HWND,
     query: String,
     sel: bool,
-    /// (label, slug, hint), best first.
-    models: Vec<(String, String, &'static str)>,
+    /// (label, slug, hint, account id), best first: the current account's models, then other accounts'
+    /// (those only show while you type).
+    models: Vec<(String, String, &'static str, String)>,
     items: Vec<Item>,
     cursor: usize,
     top: usize,
     rects: Vec<(Item, RECT)>,
     search: RECT,
+    /// The plan usage block above Effort (empty when not shown), and the reading it was drawn from.
+    usage: RECT,
+    usage_seen: i64,
+}
+
+/// The service whose plan usage the menu shows: the account in use, if it's a Claude or ChatGPT sign-in.
+fn usage_kind() -> Option<&'static str> {
+    let p = app().cfg.active_profile();
+    if !p.is_login() { return None; }
+    match p.kind.as_str() { "claude" => Some("claude"), "codex" => Some("codex"), _ => None }
+}
+
+/// Codex can be asked any time; ask when the reading is missing or over a minute old.
+fn want_usage() {
+    if usage_kind() == Some("codex") && crate::core::usage::get("codex").is_none_or(|u| crate::core::usage::now() - u.at > 60) {
+        super::cli::refresh_codex_usage();
+    }
+}
+
+/// "resets 14:20" within the day, "resets Thu 09:00" further out, in local time.
+fn reset_text(ts: i64) -> String {
+    use windows_sys::Win32::Foundation::{FILETIME, SYSTEMTIME};
+    use windows_sys::Win32::System::Time::{FileTimeToSystemTime, SystemTimeToTzSpecificLocalTime};
+    if ts <= 0 { return String::new(); }
+    let ft100 = ((ts + 11_644_473_600) as u64) * 10_000_000;
+    let ft = FILETIME { dwLowDateTime: ft100 as u32, dwHighDateTime: (ft100 >> 32) as u32 };
+    unsafe {
+        let (mut utc, mut loc): (SYSTEMTIME, SYSTEMTIME) = (std::mem::zeroed(), std::mem::zeroed());
+        if FileTimeToSystemTime(&ft, &mut utc) == 0 || SystemTimeToTzSpecificLocalTime(std::ptr::null(), &utc, &mut loc) == 0 { return String::new(); }
+        let hm = format!("{:02}:{:02}", loc.wHour, loc.wMinute);
+        if ts - crate::core::usage::now() < 20 * 3600 { format!("resets {hm}") }
+        else { format!("resets {} {hm}", ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][(loc.wDayOfWeek % 7) as usize]) }
+    }
 }
 
 thread_local! {
@@ -48,7 +82,6 @@ fn describe(slug: &str, name: &str) -> (String, &'static str) {
     let current_gen = !l.starts_with("5.") && !l.starts_with("4");
     let hint = match () {
         _ if !current_gen && !matches!(l.as_str(), "haiku" | "sonnet" | "opus") => "",
-        _ if l.contains("terra") && current_gen => "grounded",
         _ if l.contains("luna") || l == "haiku" => "fastest",
         _ if l.contains("sol") || l == "sonnet" => "balanced",
         _ if l.contains("astra") || l == "opus" => "smartest",
@@ -116,24 +149,36 @@ unsafe fn draw_custom(dc: HDC, ic: &Ic, x: i32, y: i32, color: u32) {
     }
 }
 
+/// The leading model generation of a label: 6 for "6.1-SOL" and "6-ASTRA", 5 for "5.6-LUNA", None for "HAIKU".
+fn generation(label: &str) -> Option<u32> {
+    label.split(|c: char| c == '.' || c == '-').next().and_then(|n| n.parse().ok())
+}
+
 fn rank(label: &str) -> u32 {
     let l = label.to_lowercase();
     let old = if l.starts_with("5.") { 10 } else { 0 };
     old + if l.contains("luna") || l == "haiku" { 0 } else if l.contains("terra") && !l.starts_with("5.") { 1 } else if l.contains("sol") || l == "sonnet" { 2 } else if l.contains("astra") || l == "opus" { 3 } else if l == "default" { 20 } else { 4 }
 }
 
-fn load_models() -> Vec<(String, String, &'static str)> {
+fn load_models() -> Vec<(String, String, &'static str, String)> {
     let a = app();
-    let p = a.cfg.active_profile().clone();
-    if !p.is_login() { return vec![]; }
-    let mut v: Vec<(String, String, &'static str)> = app::model_list(&p).into_iter().map(|(name, slug)| {
-        let (label, hint) = describe(&slug, &name);
-        (label, slug, hint)
-    }).collect();
-    // Terra 6.1 isn't in the Codex model cache yet, so it is always offered.
-    if !v.iter().any(|m| m.0.contains("6.1-TERRA")) { v.push(("6.1-TERRA".into(), "gpt-6.1-terra".into(), "grounded")); }
-    v.sort_by_key(|m| rank(&m.0));
+    let active = a.cfg.active.clone();
+    let mut v: Vec<(String, String, &'static str, String)> = vec![];
+    for p in a.cfg.profiles.iter().filter(|p| p.is_login()) {
+        // Another account's Default means nothing out of context, so only real models are offered from it.
+        let other = p.id != active;
+        v.extend(app::model_list(p).into_iter().filter(|(_, slug)| !(other && slug.is_empty())).map(|(name, slug)| {
+            let (label, hint) = describe(&slug, &name);
+            (label, slug, hint, p.id.clone())
+        }));
+    }
+    v.sort_by_key(|m| (m.3 != active, rank(&m.0)));
     v
+}
+
+/// An account's display name ("Claude", "ChatGPT").
+fn account_name(id: &str) -> String {
+    app().cfg.profiles.iter().find(|p| p.id == id).map_or_else(String::new, |p| p.name.clone())
 }
 
 /// "luna low" -> model words ["luna"] and an effort. A word of two or more letters that starts "low",
@@ -154,10 +199,10 @@ fn effort_label(v: &str) -> &'static str {
 impl Menu {
     fn matches(&self) -> Vec<usize> {
         let (words, _) = parse(&self.query);
-        let current = app().cfg.active_profile().model.clone();
+        let active = &app().cfg.active;
         self.models.iter().enumerate().filter(|(_, m)| {
-            // Older generations stay out of the list until you type for them; the chosen model always shows.
-            if words.is_empty() && m.0.starts_with("5.") && m.1 != current { return false; }
+            // Other accounts' models show only while you type ("haiku" from the ChatGPT account).
+            if words.is_empty() && m.3 != *active { return false; }
             let hay = format!("{} {}", m.0, m.1).to_lowercase();
             words.iter().all(|w| hay.contains(w.as_str()))
         }).map(|(i, _)| i).collect()
@@ -174,10 +219,36 @@ impl Menu {
         }
         self.items = items;
         self.cursor = if keep_current {
-            let cur = &app().cfg.active_profile().model;
-            self.items.iter().position(|it| matches!(it, Item::Model(i) if self.models[*i].1 == *cur)).unwrap_or(0)
+            let (cur, active) = (&app().cfg.active_profile().model, &app().cfg.active);
+            self.items.iter().position(|it| matches!(it, Item::Model(i) if self.models[*i].1 == *cur && self.models[*i].3 == *active)).unwrap_or(0)
         } else { 0 }.min(self.items.len().saturating_sub(1));
         self.scroll();
+    }
+
+    /// True for a model from an older generation than its account's newest one: drawn dimmed.
+    fn is_older(&self, i: usize) -> bool {
+        let newest = self.models.iter().filter(|m| m.3 == self.models[i].3).filter_map(|m| generation(&m.0)).max();
+        matches!((generation(&self.models[i].0), newest), (Some(g), Some(n)) if g < n)
+    }
+
+    /// True for a row from another account than the one in use.
+    fn is_other(&self, i: usize) -> bool { self.models[i].3 != app().cfg.active }
+
+    /// True when the row at `k` is the first from another account: it gets an "Other accounts" heading.
+    fn starts_others(&self, k: usize) -> bool {
+        let other = |k: usize| matches!(self.items.get(k), Some(Item::Model(i)) if self.is_other(*i));
+        other(k) && (k == 0 || !other(k - 1))
+    }
+
+    /// True when the row at `k` starts a new group within an account: the generation changes from the row
+    /// above (6 to 5.6, or 5.6 to Default). Models without a number (Claude's Haiku, Sonnet, Opus) never split.
+    fn starts_group(&self, k: usize) -> bool {
+        if k == 0 || self.starts_others(k) { return false; }
+        let gen_of = |it: &Item| match it { Item::Model(i) => Some((generation(&self.models[*i].0), &self.models[*i].3)), _ => None };
+        match (self.items.get(k - 1).and_then(gen_of), self.items.get(k).and_then(gen_of)) {
+            (Some((Some(a), pa)), Some((b, pb))) => pa == pb && Some(a) != b,
+            _ => false,
+        }
     }
 
     fn model_count(&self) -> usize { self.items.iter().filter(|i| matches!(i, Item::Model(_))).count() }
@@ -204,11 +275,24 @@ impl Menu {
             match it {
                 Item::Model(_) => {
                     if k >= self.top && k < self.top + VISIBLE_MODELS {
+                        if k > self.top && self.starts_group(k) { y += s(9); }
+                        if self.starts_others(k) { y += s(22); }
                         self.rects.push((it, RECT { left: pad, top: y, right: w - pad, bottom: y + row }));
                         y += row;
                     }
                 }
-                Item::Effort => { y += s(9); self.rects.push((it, RECT { left: pad, top: y, right: w - pad, bottom: y + row })); y += row; }
+                Item::Effort => {
+                    // Plan usage sits between the models and Effort, while nothing is typed.
+                    self.usage = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+                    if let (Some(kind), true) = (usage_kind(), self.query.trim().is_empty()) {
+                        let u = crate::core::usage::get(kind);
+                        self.usage_seen = u.map_or(0, |u| u.at);
+                        let h = if u.is_some() { s(44) * 2 } else { row };
+                        y += s(9);
+                        self.usage = RECT { left: pad, top: y, right: w - pad, bottom: y + h };
+                        y += h;
+                    }
+                    y += s(9); self.rects.push((it, RECT { left: pad, top: y, right: w - pad, bottom: y + row })); y += row; }
                 _ => { self.rects.push((it, RECT { left: pad, top: y, right: w - pad, bottom: y + row })); y += row; }
             }
         }
@@ -239,7 +323,8 @@ pub fn toggle() {
             wc.lpszClassName = class.as_ptr();
             RegisterClassW(&wc);
         });
-        let mut m = Menu { hwnd: std::ptr::null_mut(), query: String::new(), sel: false, models: load_models(), items: vec![], cursor: 0, top: 0, rects: vec![], search: std::mem::zeroed() };
+        want_usage();
+        let mut m = Menu { hwnd: std::ptr::null_mut(), query: String::new(), sel: false, models: load_models(), items: vec![], cursor: 0, top: 0, rects: vec![], search: std::mem::zeroed(), usage: std::mem::zeroed(), usage_seen: 0 };
         m.refresh(true);
         let (w_, h_) = m.layout();
         let mut hr: RECT = std::mem::zeroed();
@@ -252,6 +337,8 @@ pub fn toggle() {
         round_popup(h, w_, h_, s(18));
         m.hwnd = h;
         MENU.set(Some(m));
+        // Checks once a second for a new usage reading (a ChatGPT check runs in the background).
+        SetTimer(h, 1, 1000, None);
         ShowWindow(h, SW_SHOWNOACTIVATE);
     }
 }
@@ -327,16 +414,18 @@ fn switch_account(back: bool) {
     a.cfg.active = a.cfg.profiles[(i + if back { n - 1 } else { 1 }) % n].id.clone();
     app::save_config();
     app::update_header();
+    want_usage();
     MENU.with_borrow_mut(|m| if let Some(m) = m { m.models = load_models(); m.refresh(true); });
     redraw();
 }
 
 /// Applies a model (and a typed effort) and closes.
 fn pick_model(i: usize) {
-    let (slug, effort) = MENU.with_borrow(|m| m.as_ref().map(|m| (m.models[i].1.clone(), parse(&m.query).1))).unwrap_or_default();
+    let (slug, effort, id) = MENU.with_borrow(|m| m.as_ref().map(|m| (m.models[i].1.clone(), parse(&m.query).1, m.models[i].3.clone()))).unwrap_or_default();
     close();
     let a = app();
-    let id = a.cfg.active.clone();
+    // A model from another account switches to that account as well.
+    if !id.is_empty() && a.cfg.profiles.iter().any(|p| p.id == id) { a.cfg.active = id.clone(); }
     if let Some(p) = a.cfg.profiles.iter_mut().find(|p| p.id == id) {
         p.model = slug;
         if let Some(e) = effort { p.effort = e.to_string(); }
@@ -511,9 +600,14 @@ unsafe fn paint(h: HWND, dc: HDC, m: &Menu) {
 
     let (_, typed_effort) = parse(&m.query);
     let effort_now = typed_effort.unwrap_or(p.effort.as_str());
-    let mut model_no = 0;
     for (it, r) in &m.rects {
-        if matches!(it, Item::Effort) {
+        let idx = m.items.iter().position(|x| x == it).unwrap_or(0);
+        if m.starts_others(idx) {
+            let o = SelectObject(dc, a.small_font() as _);
+            text(dc, "Other accounts", RECT { left: r.left + s(12), top: r.top - s(22), right: r.right, bottom: r.top - s(2) }, a.theme.muted, DT_LEFT);
+            SelectObject(dc, o);
+        }
+        if matches!(it, Item::Effort) || (idx > m.top && m.starts_group(idx)) {
             let pen = CreatePen(PS_SOLID, 1, a.theme.bubble);
             let op = SelectObject(dc, pen as _);
             MoveToEx(dc, s(14), r.top - s(5), std::ptr::null_mut());
@@ -521,7 +615,6 @@ unsafe fn paint(h: HWND, dc: HDC, m: &Menu) {
             SelectObject(dc, op);
             DeleteObject(pen as _);
         }
-        let idx = m.items.iter().position(|x| x == it).unwrap_or(0);
         if idx == m.cursor {
             round(dc, r, mix(a.theme.bg, a.theme.bubble, 55), Some(mix(a.theme.bubble, a.theme.accent, 55)), s(12));
         }
@@ -534,18 +627,24 @@ unsafe fn paint(h: HWND, dc: HDC, m: &Menu) {
         let label = |t: &str| text(dc, t, RECT { left: lx + s(32), top: r.top, right: rx - s(90), bottom: r.bottom }, a.theme.text, DT_LEFT | DT_END_ELLIPSIS);
         match *it {
             Item::Model(i) => {
-                let (name, slug, hint) = &m.models[i];
+                let (name, slug, hint, acct) = &m.models[i];
+                // Another account's row names that account where the speed hint would be.
+                let acct_name = if m.is_other(i) { account_name(acct) } else { String::new() };
+                let hint: &str = if m.is_other(i) { &acct_name } else { hint };
                 let cur = *slug == p.model;
                 // Every model keeps its own icon; the chosen one is drawn in the accent color.
                 let _ = cur;
+                // Older generations are dimmed: icon and name blended halfway toward the background.
+                let older = m.is_older(i);
+                let fade = |c: u32| if older { mix(c, a.theme.bg, 45) } else { c };
                 match icon(name, a.theme.muted) {
-                    (Ic::Glyph(g), c) => glyph(g, c),
-                    (ic, c) => draw_custom(dc, &ic, lx, (r.top + r.bottom) / 2 - s(9), c),
+                    (Ic::Glyph(g), c) => glyph(g, fade(c)),
+                    (ic, c) => draw_custom(dc, &ic, lx, (r.top + r.bottom) / 2 - s(9), fade(c)),
                 }
-                label(name);
+                text(dc, name, RECT { left: lx + s(32), top: r.top, right: rx - s(90), bottom: r.bottom }, fade(a.theme.text), DT_LEFT | DT_END_ELLIPSIS);
                 let mut right = rx;
-                if model_no < 4 && m.query.is_empty() { right = keycap(dc, &(model_no + 1).to_string(), right, r) - s(8); }
-                model_no += 1;
+                // The number is the row's place in the whole list, which is what pressing it picks, even when scrolled.
+                if idx < 4 && m.query.is_empty() { right = keycap(dc, &(idx + 1).to_string(), right, r) - s(8); }
                 let o = SelectObject(dc, a.small_font() as _);
                 text(dc, hint, RECT { left: lx, top: r.top, right, bottom: r.bottom }, a.theme.muted, DT_RIGHT);
                 SelectObject(dc, o);
@@ -568,6 +667,59 @@ unsafe fn paint(h: HWND, dc: HDC, m: &Menu) {
                 let o = SelectObject(dc, a.small_font() as _);
                 text(dc, &p.name, RECT { left: lx, top: r.top, right, bottom: r.bottom }, a.theme.muted, DT_RIGHT);
                 SelectObject(dc, o);
+            }
+        }
+    }
+    // Plan usage: a bar per limit window, how much is used, and when it resets.
+    let ur = m.usage;
+    if ur.bottom > ur.top {
+        let pen = CreatePen(PS_SOLID, 1, a.theme.bubble);
+        let op = SelectObject(dc, pen as _);
+        MoveToEx(dc, s(14), ur.top - s(5), std::ptr::null_mut());
+        LineTo(dc, rc.right - s(14), ur.top - s(5));
+        SelectObject(dc, op);
+        DeleteObject(pen as _);
+        let (lx, rx) = (ur.left + s(12), ur.right - s(12));
+        let glyph = |g: &str, top: i32, bottom: i32| {
+            let o = SelectObject(dc, a.icon_font() as _);
+            text(dc, g, RECT { left: lx, top, right: lx + s(22), bottom }, a.theme.muted, DT_LEFT);
+            SelectObject(dc, o);
+        };
+        let kind = usage_kind().unwrap_or("");
+        match crate::core::usage::get(kind) {
+            None => {
+                glyph("\u{E9D2}", ur.top, ur.bottom);
+                let msg = if kind == "claude" { "Usage shows after your next reply" } else { "Checking usage\u{2026}" };
+                let o = SelectObject(dc, a.small_font() as _);
+                text(dc, msg, RECT { left: lx + s(32), top: ur.top, right: rx, bottom: ur.bottom }, a.theme.muted, DT_LEFT | DT_END_ELLIPSIS);
+                SelectObject(dc, o);
+            }
+            Some(u) => {
+                for (k, (icon, label, win)) in [("\u{E121}", "5 hours", u.five_hour), ("\u{E787}", "Week", u.week)].into_iter().enumerate() {
+                    let top = ur.top + k as i32 * s(44);
+                    let r1 = RECT { left: lx, top, right: rx, bottom: top + s(26) };
+                    glyph(icon, r1.top, r1.bottom);
+                    text(dc, label, RECT { left: lx + s(32), top: r1.top, right: lx + s(100), bottom: r1.bottom }, a.theme.text, DT_LEFT);
+                    let o = SelectObject(dc, a.small_font() as _);
+                    let Some(win) = win else {
+                        text(dc, "not reported", RECT { left: lx + s(104), top: r1.top, right: rx, bottom: r1.bottom }, a.theme.muted, DT_LEFT);
+                        SelectObject(dc, o);
+                        continue;
+                    };
+                    let pct = win.used.clamp(0.0, 100.0);
+                    text(dc, &format!("{}%", pct.round() as i32), RECT { left: rx - s(40), top: r1.top, right: rx, bottom: r1.bottom }, a.theme.muted, DT_RIGHT);
+                    // The bar: accent while there's room, amber from 70%, red from 90%.
+                    let cy = (r1.top + r1.bottom) / 2;
+                    let track = RECT { left: lx + s(104), top: cy - s(3), right: rx - s(46), bottom: cy + s(3) };
+                    round(dc, &track, mix(a.theme.bg, a.theme.bubble, 80), None, s(6));
+                    let fill_w = ((track.right - track.left) as f64 * pct / 100.0).round() as i32;
+                    if fill_w > 0 {
+                        let c = if pct >= 90.0 { 0x4B53E5 } else if pct >= 70.0 { 0x3BA3E3 } else { a.theme.accent };
+                        round(dc, &RECT { right: track.left + fill_w.max(s(6)), ..track }, c, None, s(6));
+                    }
+                    text(dc, &reset_text(win.resets), RECT { left: lx + s(32), top: r1.bottom - s(4), right: rx, bottom: r1.bottom + s(14) }, a.theme.muted, DT_LEFT);
+                    SelectObject(dc, o);
+                }
             }
         }
     }
@@ -654,6 +806,14 @@ unsafe extern "system" fn proc_(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LR
                 m.top = (m.top as isize - d).clamp(0, n.saturating_sub(VISIBLE_MODELS) as isize) as usize;
             });
             redraw();
+            0
+        }
+        WM_TIMER => {
+            let changed = MENU.with_borrow(|m| m.as_ref().is_some_and(|m| {
+                let at = usage_kind().and_then(crate::core::usage::get).map_or(0, |u| u.at);
+                at != m.usage_seen
+            }));
+            if changed { redraw(); }
             0
         }
         WM_MOUSEACTIVATE => MA_NOACTIVATE as isize,

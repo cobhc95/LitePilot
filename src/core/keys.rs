@@ -27,6 +27,7 @@ pub const ACTIONS: &[(&str, &str, &str)] = &[
     ("copy_code", "Copy the last code or table", "Ctrl+Shift+C"),
     ("copy_reply", "Copy the last reply", "Ctrl+Shift+R"),
     ("on_top", "Keep on top", "Ctrl+T"),
+    ("taskbar", "Show in taskbar and Alt+Tab", "Ctrl+Shift+T"),
     ("settings", "Settings", "Ctrl+,"),
     ("chat_memory", "Chat memory (what LitePilot remembers)", "Ctrl+Shift+Y"),
     ("memory_undo", "Undo the last remember or forget", "Ctrl+Shift+Z"),

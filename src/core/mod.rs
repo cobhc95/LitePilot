@@ -12,6 +12,7 @@ pub mod protocol;
 pub mod resident;
 pub mod tidy;
 pub mod update;
+pub mod usage;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Msg {

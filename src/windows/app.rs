@@ -1005,12 +1005,22 @@ unsafe fn set_pos(view: HWND, y: i32) {
     SendMessageW(view, 0x0400 + 222, 0, &mut pt as *mut POINT as isize); // EM_SETSCROLLPOS
 }
 
-/// Focuses the chat with the caret at the end of the latest question, not at the end of the reply after it.
+/// Focuses the chat where you are reading: the caret goes to the first character on screen and the scroll
+/// position stays exactly as it was (it used to jump back to the latest question).
 unsafe fn focus_chat_at_question(view: HWND) {
-    let end = app().user_end as isize;
-    SendMessageW(view, EM_SETSEL_, end as usize, end);
+    let (pos, _, _) = scroll_range(view);
+    let d = GetDpiForWindow(view).max(96) as i32 / 96;
+    let mut pt = POINT { x: 12 * d, y: 6 * d };
+    let at = SendMessageW(view, 0xD7, 0, &mut pt as *mut POINT as isize); // EM_CHARFROMPOS (RichEdit: POINTL in lParam)
+    SendMessageW(view, EM_SETSEL_, at as usize, at);
     SetFocus(view);
-    SendMessageW(view, 0xB7, 0, 0); // EM_SCROLLCARET: keep the caret on screen
+    set_pos(view, pos);
+    InvalidateRect(view, std::ptr::null(), 0);
+}
+
+thread_local! {
+    /// Where the chat was scrolled when the window hid, and which chat it was, so showing it again goes back there.
+    static SAVED_SCROLL: std::cell::RefCell<Option<(PathBuf, i32)>> = const { std::cell::RefCell::new(None) };
 }
 
 /// Scrolls so the latest question sits at the top of the view, as far as the text allows.
@@ -1021,7 +1031,7 @@ unsafe fn show_question_at_top(view: HWND) {
 }
 
 #[derive(Clone, Copy, PartialEq)]
-enum Scroll { Bottom, QuestionTop, Keep }
+enum Scroll { Bottom, QuestionTop, Keep, At(i32) }
 
 fn render_all() { render_view(Scroll::Bottom); }
 /// Redraws the chat where the reader is, e.g. after a theme or size change.
@@ -1053,6 +1063,7 @@ fn render_view(mode: Scroll) {
             Scroll::Bottom => scroll_bottom(a.view),
             Scroll::QuestionTop => { a.pin_user = true; show_question_at_top(a.view); }
             Scroll::Keep => set_pos(a.view, old_pos),
+            Scroll::At(y) => set_pos(a.view, y),
         }
         SendMessageW(a.view, WM_SETREDRAW, 1, 0);
         InvalidateRect(a.view, std::ptr::null(), 0);
@@ -1189,9 +1200,26 @@ fn warm_engine() {
     cli::warm(&p.kind, &p.model, &p.effort, a.cfg.web_search, &memory_store::block_for_profile(&mem_dir(), &p.kind, mode), mode == "engine", &cwd);
 }
 
+/// A window focus can be handed back to: another program's visible, normal (not minimized) top-level window,
+/// not the desktop or taskbar. Handing focus to the desktop is what pushed browsers behind it.
+unsafe fn returnable(h: HWND) -> bool {
+    if h.is_null() || IsWindow(h) == 0 || IsWindowVisible(h) == 0 || IsIconic(h) != 0 { return false; }
+    let mut pid = 0u32;
+    GetWindowThreadProcessId(h, &mut pid);
+    if pid == GetCurrentProcessId() { return false; }
+    let mut cls = [0u16; 64];
+    let n = GetClassNameW(h, cls.as_mut_ptr(), cls.len() as i32).max(0) as usize;
+    let cls = String::from_utf16_lossy(&cls[..n]);
+    !matches!(cls.as_str(), "Progman" | "WorkerW" | "Shell_TrayWnd" | "Shell_SecondaryTrayWnd")
+}
+
 pub fn show() {
     let a = app();
     if a.visible { return unsafe {
+        // Open but not focused: remember the window you came from, so hiding goes back there and not to
+        // whatever was in front when LitePilot first opened.
+        let fg = GetForegroundWindow();
+        if returnable(fg) { a.prev = fg; }
         if IsIconic(a.hwnd) != 0 { ShowWindow(a.hwnd, SW_RESTORE); }
         SetWindowPos(a.hwnd, if a.cfg.on_top { HWND_TOPMOST } else { HWND_NOTOPMOST }, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
         if !a.settings.is_null() && IsWindowVisible(a.settings) != 0 {
@@ -1205,10 +1233,15 @@ pub fn show() {
         a.loaded = true;
     }
     unsafe {
-        a.prev = GetForegroundWindow();
+        let fg = GetForegroundWindow();
+        a.prev = if returnable(fg) { fg } else { std::ptr::null_mut() };
         layout();
         a.visible = true;
-        render_all();
+        // Back to where you were scrolled when it hid, if it's the same chat; a different chat starts at the bottom.
+        match SAVED_SCROLL.with_borrow_mut(|s| s.take()) {
+            Some((chat, y)) if chat == a.chat => render_view(Scroll::At(y)),
+            _ => render_all(),
+        }
         // Cloaked while it shows and paints once, so the typing box never flashes its unpainted (white) state.
         let cloak = |on: i32| { DwmSetWindowAttribute(a.hwnd, 13, &on as *const i32 as *const _, 4); };
         cloak(1);
@@ -1240,7 +1273,19 @@ pub fn hide() {
         // LitePilot), that window keeps focus; pulling an older one forward is what disturbed other windows.
         let had_focus = GetForegroundWindow() == a.hwnd && IsIconic(a.hwnd) == 0;
         ShowWindow(a.hwnd, SW_HIDE);
-        if had_focus && !a.prev.is_null() && IsWindow(a.prev) != 0 && IsIconic(a.prev) == 0 { SetForegroundWindow(a.prev); }
+        if had_focus {
+            // Back to the window you came from; failing that, the next real window down the stack (never the desktop).
+            let mut to = if returnable(a.prev) { a.prev } else { std::ptr::null_mut() };
+            let mut h = GetWindow(a.hwnd, GW_HWNDNEXT);
+            while to.is_null() && !h.is_null() {
+                if returnable(h) && GetWindow(h, GW_OWNER).is_null() && GetWindowLongPtrW(h, GWL_EXSTYLE) & WS_EX_TOOLWINDOW as isize == 0 { to = h; }
+                h = GetWindow(h, GW_HWNDNEXT);
+            }
+            if !to.is_null() { SetForegroundWindow(to); }
+        }
+        // Remember where the chat was scrolled before it is emptied, so showing it again goes back there.
+        let (pos, _, _) = scroll_range(a.view);
+        SAVED_SCROLL.with_borrow_mut(|s| *s = Some((a.chat.clone(), pos)));
         set_text(a.view, "");
         images::settle();
         code::clear();
@@ -1621,6 +1666,7 @@ pub fn run_action(id: &str) {
             "copy_code" => copy_last_block(),
             "copy_reply" => copy_last_reply(),
             "on_top" => toggle_on_top(),
+            "taskbar" => { toggle_taskbar(); if tile_menu::is_open() { tile_menu::redraw(); } }
             "settings" => settings::open(),
             "chat_memory" => settings::open_chat_memory(),
             "memory_undo" => memory_undo(),
@@ -1764,6 +1810,23 @@ unsafe fn context_menu(h: HWND, at: Option<(i32, i32)>) {
     }
 }
 
+/// Sees every key LitePilot's window thread reads, whichever control has focus (the typing box, the chat,
+/// a button, the window itself). Alt held alone shows the shortcut labels; any other key cancels them,
+/// so Alt+Left and the like don't flash them. Only while LitePilot is the active window.
+unsafe extern "system" fn alt_hook(code: i32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    if code == HC_ACTION as i32 {
+        let a = app();
+        let up = (lp >> 31) & 1 == 1;
+        let ours = a.visible && GetForegroundWindow() == a.hwnd;
+        if matches!(wp as u16, VK_MENU | VK_LMENU | VK_RMENU) {
+            if ours || up { key_badges::alt(!up); }
+        } else if !up {
+            key_badges::stop();
+        }
+    }
+    CallNextHookEx(std::ptr::null_mut(), code, wp, lp)
+}
+
 unsafe extern "system" fn child_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     let a = app();
     let is_input = h == a.input;
@@ -1891,8 +1954,7 @@ unsafe extern "system" fn child_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             return 1;
         }
     }
-    // Holding Alt shows each button's shortcut; letting go, or losing focus, hides them.
-    if matches!(msg, WM_KEYDOWN | WM_SYSKEYDOWN | WM_KEYUP | WM_SYSKEYUP) && wp as u16 == VK_MENU { key_badges::alt(matches!(msg, WM_KEYDOWN | WM_SYSKEYDOWN)); }
+    // Holding Alt is watched by alt_hook; losing focus hides the labels.
     if msg == WM_KILLFOCUS { key_badges::stop(); }
     // While the model menu is open it gets every key; the typing box keeps focus underneath.
     if chip_menu::is_open() {
@@ -1931,6 +1993,12 @@ unsafe extern "system" fn child_proc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         if is_input && msg == WM_KEYDOWN && ((wp as u16 == 0x56 && ctl) || (wp as u16 == VK_INSERT && shf)) && attach_win::paste() { ATE_KEY.set(true); return 0; }
         if on_key(wp as u16) { ATE_KEY.set(true); return 0; }
         ATE_KEY.set(false);
+        // In the chat, plain Up/Down scroll it a line at a time instead of moving the caret through the text.
+        // With Shift they still move the caret, so selecting text by keyboard works as before.
+        if !is_input && msg == WM_KEYDOWN && !ctl && !shf && GetKeyState(VK_MENU as i32) >= 0 && matches!(wp as u16, VK_UP | VK_DOWN) {
+            SendMessageW(h, WM_VSCROLL, if wp as u16 == VK_UP { SB_LINEUP } else { SB_LINEDOWN } as usize, 0);
+            return 0;
+        }
     }
     if msg == WM_CHAR && is_input && wp == 13 && GetKeyState(VK_SHIFT as i32) >= 0 { return 0; }
     // Ctrl+letter chars from handled shortcuts must not reach the edit control.
@@ -2254,7 +2322,14 @@ unsafe extern "system" fn wndproc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
         WM_WINDOWPOSCHANGING => {
             let a = app();
             let p = &mut *(lp as *mut WINDOWPOS);
-            if a.cfg.on_top && a.visible && p.flags & (SWP_NOZORDER | SWP_HIDEWINDOW) == 0 && p.hwndInsertAfter as isize != -1 {
+            // Going right under one of LitePilot's own windows (the Alt labels, a menu) is left alone: Windows
+            // does that to keep owned popups in front, and forcing the very top here buried them.
+            let under_own = {
+                let ins = p.hwndInsertAfter;
+                let mut pid = 0u32;
+                (ins as isize) > 1 && { GetWindowThreadProcessId(ins, &mut pid); pid == GetCurrentProcessId() }
+            };
+            if a.cfg.on_top && a.visible && !under_own && p.flags & (SWP_NOZORDER | SWP_HIDEWINDOW) == 0 && p.hwndInsertAfter as isize != -1 {
                 p.hwndInsertAfter = HWND_TOPMOST;
             }
             DefWindowProcW(h, msg, wp, lp)
@@ -2265,6 +2340,7 @@ unsafe extern "system" fn wndproc(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
                 SetWindowPos(h, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
             }
             lift_settings(a);
+            key_badges::lift();
             DefWindowProcW(h, msg, wp, lp)
         }
         WM_ACTIVATE => {
@@ -2597,6 +2673,8 @@ pub fn run(show_now: bool) {
         update_header();
 
         TASKBAR_CREATED.store(RegisterWindowMessageW(w("TaskbarCreated").as_ptr()) as usize, Ordering::Relaxed);
+        // Alt hints: watch this thread's keys, so holding Alt works whichever part of the window has focus.
+        SetWindowsHookExW(WH_KEYBOARD, Some(alt_hook), std::ptr::null_mut(), GetCurrentThreadId());
         tray(hwnd, NIM_ADD);
         apply_engine_settings();
         apply_taskbar();

@@ -63,7 +63,9 @@ impl Server {
 
     fn line(&mut self) -> Option<String> {
         let mut s = String::new();
-        (self.out.read_line(&mut s).ok()? > 0).then_some(s)
+        if self.out.read_line(&mut s).ok()? == 0 { return None; }
+        crate::core::usage::observe(&s); // plan usage rides along with replies
+        Some(s)
     }
 
     fn send(&mut self, s: &str) -> bool { self.stdin.write_all(s.as_bytes()).and_then(|_| self.stdin.flush()).is_ok() }
