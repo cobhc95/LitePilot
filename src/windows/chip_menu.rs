@@ -379,7 +379,14 @@ fn step_effort(dir: i32) {
     let cur = all.iter().position(|e| *e == a.cfg.active_profile().effort).unwrap_or(0) as i32;
     set_effort(all[(cur + dir).clamp(0, 3) as usize]);
     // An effort typed in the box would now disagree with the arrows, so drop it.
-    MENU.with_borrow_mut(|m| if let Some(m) = m { let (words, _) = parse(&m.query); m.query = words.join(" "); m.refresh(false); });
+    // The highlight stays on the same row (Sonnet stays Sonnet) when the rows are rebuilt.
+    MENU.with_borrow_mut(|m| if let Some(m) = m {
+        let before = m.items.get(m.cursor).copied();
+        let (words, _) = parse(&m.query);
+        m.query = words.join(" ");
+        m.refresh(false);
+        if let Some(k) = before.and_then(|b| m.items.iter().position(|it| *it == b)) { m.cursor = k; m.scroll(); }
+    });
     redraw();
 }
 
