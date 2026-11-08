@@ -5,6 +5,6 @@
 2. **Build** with `build-release.cmd` (runs the tests, then makes `dist\LitePilot-<version>-Setup.exe` and `-Portable.zip`).
 3. **Upload to GitHub**: commit, tag `v<version>` (always a new tag, never move one), push, then `gh release create` with both the Setup EXE and the Portable ZIP.
 4. **Wipe old versions**: delete the older local builds in `dist`. Do not delete old GitHub releases or force-move tags unless the user asks.
-5. **Launch the new version**: quit the running LitePilot, install the new Setup EXE, and start it again.
+5. **Launch the new version**: quit the running LitePilot, install the new Setup EXE, and start it again. Start it **outside the Claude app's process job**, or closing the Claude desktop app kills LitePilot too: `Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{CommandLine='"%LOCALAPPDATA%\Programs\LitePilot\LitePilot.exe"'}` (expand the path first). Never `Start-Process` it, and do not leave the installer's own relaunch running (it inherits the job).
 
 Quit the real LitePilot before running e2e tests (only one instance can run).
