@@ -201,13 +201,15 @@ pub fn ranked(list: &[String], message: &str) -> Vec<(f64, usize)> {
     let facts: Vec<Vec<String>> = list.iter().map(|f| stems(f)).collect();
     let fact_ideas: Vec<Vec<usize>> = facts.iter().map(|f| ideas_of(f)).collect();
     let n = list.len() as f64;
-    // How many facts contain each message word, for the rarity weight.
-    let idf = |w: &str| -> f64 { let df = facts.iter().filter(|f| f.iter().any(|x| near(x, w))).count() as f64; (1.0 + n / (df + 0.5)).ln() };
+    // Which facts contain each message word, worked out once (one pass per word, not one per word per fact),
+    // and from that the rarity weight of each word.
+    let hits: Vec<Vec<bool>> = msg.iter().map(|w| facts.iter().map(|f| f.iter().any(|x| near(x, w))).collect()).collect();
+    let idf: Vec<f64> = hits.iter().map(|h| (1.0 + n / (h.iter().filter(|x| **x).count() as f64 + 0.5)).ln()).collect();
     let msg_ideas = ideas_of(&msg);
     let mut scored: Vec<(f64, usize)> = Vec::new();
-    for (i, f) in facts.iter().enumerate() {
+    for (i, _) in facts.iter().enumerate() {
         let mut sc = 0.0;
-        for w in &msg { if f.iter().any(|x| near(x, w)) { sc += idf(w); } }
+        for (k, h) in hits.iter().enumerate() { if h[i] { sc += idf[k]; } }
         for id in &msg_ideas { if fact_ideas[i].contains(id) { sc += 1.2; } }
         if sc > 0.0 { sc += 0.3 * (i as f64 + 1.0) / n; } // newer wins ties
         else if about_me { sc = 0.1 + (i as f64) / n; }

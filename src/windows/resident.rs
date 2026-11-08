@@ -158,6 +158,10 @@ fn spawn(kind: &str, model: &str, effort: &str, search: bool, memory: &str, engi
         // them. Never file tools or commands: memory is saved by LitePilot from [[remember:]] lines (about 1,300
         // tokens less per message than Claude's own file-based memory).
         let tools = if search { vec!["WebSearch", "WebFetch"] } else { vec![] };
+        // Claude Code's background calls (its post-turn summary among them) compete with the reply; a chat needs
+        // none of them. At low effort, no thinking either: the first word comes sooner.
+        c.env("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1");
+        if effort == "low" { c.env("CLAUDE_CODE_DISABLE_THINKING", "1"); }
         c.args(["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--include-partial-messages", "--verbose", "--tools", &tools.join(",")]);
         // Only the search tools are pre-approved; never the file tools, which acceptEdits limits to the memory folder.
         let mut allowed: Vec<String> = if search { vec!["WebSearch".into(), "WebFetch".into()] } else { vec![] };
@@ -221,7 +225,40 @@ fn spawn(kind: &str, model: &str, effort: &str, search: bool, memory: &str, engi
 fn handshake(s: &mut Server) -> Result<(), String> {
     s.call("initialize", json!({"clientInfo": {"name": "LitePilot", "version": "1"}}))?;
     s.send(&rpc::notification("initialized"));
+    // The models whose Fast (priority) tier costs no extra usage, so every reply can use it.
+    if let Ok(v) = s.call("model/list", json!({})) {
+        *FREE_FAST.lock().unwrap_or_else(|e| e.into_inner()) = free_fast(&v);
+    }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn fast_tier_only_where_it_costs_nothing_extra() {
+        let v = serde_json::json!({"data": [
+            {"id": "gpt-6-luna", "serviceTiers": {"id": "priority", "name": "Fast", "description": "1.5x speed"}},
+            {"id": "gpt-6-sol", "serviceTiers": [{"id": "priority", "name": "Fast", "description": "2x speed, increased usage"}]},
+            {"id": "plain"}
+        ]});
+        assert_eq!(super::free_fast(&v), vec!["gpt-6-luna".to_string()]);
+        let end = r#"{"type":"stream_event","event":{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":2,"cache_read_input_tokens":649,"output_tokens":40}}}"#;
+        assert_eq!(super::message_end(end), Some((691, true)));
+        assert_eq!(super::message_end(&end.replace("end_turn", "tool_use")), Some((691, false)));
+        assert_eq!(super::message_end(r#"{"type":"assistant"}"#), None);
+    }
+}
+
+/// Models whose Fast tier Codex lists without "increased usage" (e.g. gpt-6-luna: "1.5x speed").
+static FREE_FAST: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+fn free_fast(list: &Value) -> Vec<String> {
+    let data = list["data"].as_array().or_else(|| list["result"]["data"].as_array());
+    data.into_iter().flatten().filter(|m| {
+        let tiers = &m["serviceTiers"];
+        let tiers: Vec<&Value> = match tiers { Value::Array(a) => a.iter().collect(), Value::Object(_) => vec![tiers], _ => vec![] };
+        tiers.iter().any(|t| t["id"] == "priority" && !t["description"].as_str().unwrap_or("").to_lowercase().contains("usage"))
+    }).filter_map(|m| m["id"].as_str().map(String::from)).collect()
 }
 
 fn turn_claude(s: &mut Server, prompt: &str, media: &[PathBuf], sink: &dyn Fn(Event)) -> Option<String> {
@@ -346,6 +383,7 @@ fn turn_codex(s: &mut Server, model: &str, effort: &str, prompt: &str, media: &[
     let mut params = json!({"threadId": s.thread, "input": input});
     if !model.is_empty() { params["model"] = model.into(); }
     if !effort.is_empty() { params["effort"] = effort.into(); }
+    if FREE_FAST.lock().unwrap_or_else(|e| e.into_inner()).iter().any(|m| m == model) { params["serviceTier"] = "priority".into(); }
     s.next_id += 1;
     let id = s.next_id;
     if !s.send(&rpc::request(id, "turn/start", params)) { return fail(STOPPED.into()); }
