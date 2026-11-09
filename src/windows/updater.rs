@@ -152,6 +152,8 @@ pub fn on_tick(was_visible: bool, cfg: &mut Config) -> bool {
     if ready_marker().exists() { apply(was_visible); return false; }
     if !eligible() || ASKING.get() || !cfg.check_updates { return false; }
     let Some(d) = offer() else { return false };
+    // An offer saved before this copy was updated can be older than this copy: drop it instead of asking.
+    if pending().is_none() { let _ = std::fs::remove_file(offer_file()); return false; }
     if now().saturating_sub(stamp("asked")) < DAY { return false; }
     set_stamp("asked", now());
     ASKING.set(true);
