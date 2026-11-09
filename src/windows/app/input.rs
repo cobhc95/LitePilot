@@ -70,7 +70,8 @@ pub(super) unsafe extern "system" fn alt_hook(code: i32, wp: WPARAM, lp: LPARAM)
         let ours = a.visible && GetForegroundWindow() == a.hwnd;
         if matches!(wp as u16, VK_MENU | VK_LMENU | VK_RMENU) {
             if ours || up { key_badges::alt(!up); }
-        } else if !up {
+        } else if !up && !(matches!(wp as u16, VK_CONTROL | VK_LCONTROL) && GetAsyncKeyState(VK_RMENU as i32) < 0) {
+            // (Right Alt is AltGr on many layouts: Windows adds a fake Left Ctrl to it, which must not cancel the labels.)
             key_badges::stop();
         }
     }

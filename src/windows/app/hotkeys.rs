@@ -140,7 +140,7 @@ pub fn hotkey(vk: u16) -> bool {
     let st = |k: VIRTUAL_KEY| unsafe { GetKeyState(k as i32) } < 0;
     let a = app();
     let Some(name) = key_name(vk) else { return false };
-    let pressed = keys::Combo { ctrl: st(VK_CONTROL), shift: st(VK_SHIFT), alt: st(VK_MENU), key: name };
+    let pressed = keys::Combo { ctrl: st(VK_CONTROL) && !st(VK_RMENU), shift: st(VK_SHIFT), alt: st(VK_MENU), key: name };
     match keys::resolve(&a.cfg.keys).into_iter().find(|(_, c)| *c == pressed) {
         Some((id, _)) => { run_action(id); true }
         None => false,
@@ -150,7 +150,8 @@ pub fn hotkey(vk: u16) -> bool {
 /// Shared keys for the input and transcript. Returns true when handled.
 pub(super) fn on_key(vk: u16) -> bool {
     let st = |k: VIRTUAL_KEY| unsafe { GetKeyState(k as i32) } < 0;
-    let (ctrl, shift, alt) = (st(VK_CONTROL), st(VK_SHIFT), st(VK_MENU));
+    // Right Alt is AltGr on many layouts, and Windows then also reports a Ctrl: count it as Alt alone.
+    let (ctrl, shift, alt) = (st(VK_CONTROL) && !st(VK_RMENU), st(VK_SHIFT), st(VK_MENU));
     let a = app();
     if let Some(name) = key_name(vk) {
         let pressed = keys::Combo { ctrl, shift, alt, key: name };
