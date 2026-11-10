@@ -7,6 +7,7 @@ pub(super) fn api_load(st: &mut St) {
     let saved = api_profiles();
     if st.api_sel >= saved.len() + PRESETS.len() { st.api_sel = 0; }
     st.api = Default::default();
+    set_key_saved(saved.get(st.api_sel).is_some_and(|p| !secrets::get(&p.id).is_empty()));
     if let Some(p) = saved.get(st.api_sel) {
         st.api = [p.name.clone(), p.base_url.clone(), p.model.clone(), String::new()];
     } else if let Some(p) = PRESETS.get(st.api_sel - saved.len()) {

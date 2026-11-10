@@ -140,6 +140,11 @@ pub(super) fn field_meta(f: Field) -> (&'static str, String) {
     }
 }
 
+thread_local! { static KEY_SAVED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
+
+/// Records whether the provider being edited already has a key in Credential Manager (shown as "Saved" instead of "empty").
+pub(super) fn set_key_saved(v: bool) { KEY_SAVED.set(v); }
+
 pub(super) fn field_value(f: Field, st: &St) -> String {
     let c = &app().cfg;
     match f {
@@ -147,7 +152,7 @@ pub(super) fn field_value(f: Field, st: &St) -> String {
         Field::ApiName => st.api[0].clone(),
         Field::ApiUrl => st.api[1].clone(),
         Field::ApiModel => st.api[2].clone(),
-        Field::ApiKey => if st.api[3].is_empty() { String::new() } else { "\u{2022}".repeat(st.api[3].chars().count().min(24)) },
+        Field::ApiKey => if st.api[3].is_empty() { if KEY_SAVED.get() { "Saved (hidden)".to_string() } else { String::new() } } else { "\u{2022}".repeat(st.api[3].chars().count().min(24)) },
         Field::Custom(i) => c.custom[i].clone(),
         Field::MemAdd => String::new(),
         Field::Passphrase => "\u{2022}".repeat(st.pass.chars().count().min(24)),
@@ -394,6 +399,7 @@ pub(super) fn rebuild(st: &mut St) {
 
 pub(super) fn goto(st: &mut St, page: Page, sel_idx: usize) {
     close_picker(true);
+    let from = st.page;
     st.page = page;
     st.query.clear();
     st.sel_all = false;
@@ -401,7 +407,8 @@ pub(super) fn goto(st: &mut St, page: Page, sel_idx: usize) {
     st.capture = None;
     st.scroll = 0;
     st.status.clear();
-    if page == Page::Api { api_load(st); }
+    // Coming back from the models list keeps whatever was typed and not yet saved.
+    if page == Page::Api && from != Page::Models { api_load(st); }
     st.clear_armed = false;
     st.wipe_armed = None;
     st.engine_armed = false;
