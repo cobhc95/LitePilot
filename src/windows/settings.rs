@@ -24,6 +24,13 @@ const WM_MOUSELEAVE_SETTINGS: u32 = 0x02A3;
 const WM_TIDY: u32 = WM_APP + 6;
 /// The provider's model list arrived: lParam is a Box<Result<(account id, model was blank, model ids), String>>.
 const WM_MODELS: u32 = WM_APP + 7;
+/// True when the point (client coordinates) is inside the search box drawn above the rows.
+fn in_search(h: HWND, x: i32, y: i32) -> bool {
+    let mut rc: RECT = unsafe { std::mem::zeroed() };
+    unsafe { GetClientRect(h, &mut rc); }
+    x >= s(16) && x < rc.right - s(16) && y >= s(50) && y < s(86)
+}
+
 /// Pages with a search box above their rows.
 fn has_search(p: Page) -> bool { matches!(p, Page::Home | Page::Keys | Page::ManageMem | Page::Models) }
 const CLASS: &str = "LitePilotSettings";
@@ -57,7 +64,7 @@ enum Pick { Theme, Palette, Font, Size, Spacing, Provider, TrimAfter, CloseAfter
 #[derive(Clone, Copy, PartialEq)]
 enum Field { Hotkey, ApiName, ApiUrl, ApiModel, ApiKey, Custom(usize), MemAdd, Passphrase }
 #[derive(Clone, Copy, PartialEq)]
-enum Run { ModelsAll, ModelsNone, VendorFlip(u8), UpdateCheck, SignIn, SignOut, ApiSave, ApiRemove, KeysReset, MemClear, MemTidy, EngineClear, MemPaste, MemPrompt, DataOpen, DataCopy, DataWipe(u8), Export, Import, QuickExport, TidyNow, TidyApply, TidyDiscard, TidyUndo }
+enum Run { ModelsAll, ModelsNone, UpdateCheck, SignIn, SignOut, ApiSave, ApiRemove, KeysReset, MemClear, MemTidy, EngineClear, MemPaste, MemPrompt, DataOpen, DataCopy, DataWipe(u8), Export, Import, QuickExport, TidyNow, TidyApply, TidyDiscard, TidyUndo }
 
 #[derive(Clone, Copy, PartialEq)]
 enum Kind { Nav(Page), Jump(Page, usize), Toggle(Tog), Pick(Pick), Field(Field), Run(Run), Key(usize), MemItem(usize), ModelShow(usize), Info, Hint, Preview }
@@ -163,6 +170,9 @@ struct St {
     page: Page,
     rows: Vec<Row>,
     cursor: usize,
+    /// The cursor row the last paint scrolled into view: the view follows the cursor only when it has moved since,
+    /// so the wheel can scroll away from it.
+    seen_cursor: usize,
     scroll: i32,
     query: String,
     sel_all: bool,
@@ -234,10 +244,31 @@ unsafe extern "system" fn proc_(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LR
             0
         }
         WM_ERASEBKGND => 1,
+        WM_RBUTTONUP => {
+            let (x, y) = ((lp & 0xFFFF) as i16 as i32, ((lp >> 16) & 0xFFFF) as i16 as i32);
+            let over = with(|st| has_search(st.page) && in_search(h, x, y) && st.edit.is_none() && st.capture.is_none()).unwrap_or(false);
+            if over {
+                // The menu runs its own message loop, so it opens with the settings state free.
+                let empty = with(|st| st.query.is_empty()).unwrap_or(true);
+                let mut pt = windows_sys::Win32::Foundation::POINT { x, y };
+                windows_sys::Win32::Graphics::Gdi::ClientToScreen(h, &mut pt);
+                let menu = CreatePopupMenu();
+                for (id, label, off) in [(1usize, "Cut", empty), (2, "Copy", empty), (3, "Paste", false), (4, "Select all", empty), (5, "Clear", empty)] {
+                    AppendMenuW(menu, MF_STRING | if off { MF_GRAYED } else { 0 }, id, w(label).as_ptr());
+                }
+                let cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.x, pt.y, 0, h, std::ptr::null());
+                DestroyMenu(menu);
+                if cmd > 0 { with(|st| keyboard::search_edit(st, cmd as u8)); refit(h); }
+                InvalidateRect(h, std::ptr::null(), 0);
+            }
+            0
+        }
         WM_LBUTTONDOWN => {
             let (x, y) = ((lp & 0xFFFF) as i16 as i32, ((lp >> 16) & 0xFFFF) as i16 as i32);
             let mut back = false;
             with(|st| {
+                // A click in the search box puts typing back there (it stays out of an open field or key capture).
+                if has_search(st.page) && in_search(h, x, y) { close_picker(true); st.edit = None; st.capture = None; st.sel_all = false; return; }
                 if y < s(46) && st.page != Page::Home { back = true; return; }
                 if let Some(i) = row_at(st, x, y) {
                     if let Some((ci, ..)) = PICK.get() {
@@ -441,7 +472,7 @@ pub fn open() {
             Some(p) => (p.0.min(wa.right - ww).max(wa.left), p.1.min(wa.bottom - wh).max(wa.top)),
             None => (wa.left + (wa.right - wa.left - ww) / 2, wa.top + ((wa.bottom - wa.top - wh) / 2).max(0)),
         };
-        let mut st = St { page: Page::Home, rows: vec![], cursor: 0, scroll: 0, query: String::new(), sel_all: false, edit: None, capture: None, status: String::new(), rects: vec![], content_h: 0, view_h: 0, api_sel: 0, api: Default::default(), signed_in: false, login_note: String::new(), mem: Vec::new(), clear_armed: false, engine_armed: false, wipe_armed: None, pass: String::new(), plan: Vec::new(), tidying: false, fonts: Some(fonts) };
+        let mut st = St { page: Page::Home, rows: vec![], cursor: 0, seen_cursor: 0, scroll: 0, query: String::new(), sel_all: false, edit: None, capture: None, status: String::new(), rects: vec![], content_h: 0, view_h: 0, api_sel: 0, api: Default::default(), signed_in: false, login_note: String::new(), mem: Vec::new(), clear_armed: false, engine_armed: false, wipe_armed: None, pass: String::new(), plan: Vec::new(), tidying: false, fonts: Some(fonts) };
         st.api_sel = api_profiles().iter().position(|p| p.id == a.cfg.active).unwrap_or(0);
         st.rows = build_rows(&st);
         ST.set(Some(st));

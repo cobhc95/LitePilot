@@ -201,25 +201,16 @@ pub(super) fn rows_for(page: Page, st: &St, query: &str) -> Vec<Row> {
             let Some(p) = api_profiles().get(st.api_sel).cloned() else { return vec![hint("Save this provider first.")] };
             let found = crate::core::models::load(&app().data, &p.id);
             let words: Vec<String> = q.to_lowercase().split_whitespace().map(String::from).collect();
-            let mut order: Vec<usize> = (0..found.len()).filter(|&i| {
+            let order: Vec<usize> = (0..found.len()).filter(|&i| {
                 let hay = format!("{} {} {}", found[i].name, found[i].id, found[i].vendor).to_lowercase();
                 words.iter().all(|w| hay.contains(w.as_str()))
             }).collect();
-            order.sort_by_key(|&i| (found[i].vendor.is_empty(), found[i].vendor.clone()));
-            let makers = maker_list(&found);
             let mut v = vec![];
             if words.is_empty() {
                 v.push(row(g("\u{E73A}"), "Show every model", "", Kind::Run(Run::ModelsAll)));
                 v.push(row(g("\u{E711}"), "Hide every model", "Except the one in use", Kind::Run(Run::ModelsNone)));
             }
-            let mut last: Option<&str> = None;
             for i in order {
-                let vd = found[i].vendor.as_str();
-                if makers.len() > 1 && last != Some(vd) {
-                    let k = makers.iter().position(|m| m == vd).unwrap_or(0) as u8;
-                    v.push(row(g("\u{E8EC}"), if vd.is_empty() { "Other" } else { vd }, "Enter shows or hides all of them", Kind::Run(Run::VendorFlip(k))));
-                    last = Some(vd);
-                }
                 v.push(row(g("\u{E950}"), &found[i].name, if found[i].name == found[i].id { "" } else { &found[i].id }, Kind::ModelShow(i)));
             }
             if v.iter().all(|r| !matches!(r.kind, Kind::ModelShow(_))) { v.push(row(g(""), "", "No model matches.", Kind::Hint)); }
@@ -418,12 +409,4 @@ pub(super) fn goto(st: &mut St, page: Page, sel_idx: usize) {
     st.mem = if matches!(page, Page::ChatMem | Page::ManageMem | Page::Tidy | Page::ImpExp | Page::Limits) { memory_store::load(&app::mem_dir()) } else { Vec::new() };
     st.rows = build_rows(st);
     st.cursor = st.rows.iter().enumerate().filter(|(_, r)| r.kind.selectable()).nth(sel_idx).map_or(first_selectable(&st.rows), |(i, _)| i);
-}
-
-/// The distinct makers in a model list, in the order the Models page shows them (unknown last, as "").
-pub(super) fn maker_list(found: &[crate::core::models::Found]) -> Vec<String> {
-    let mut v: Vec<String> = found.iter().map(|m| m.vendor.clone()).collect();
-    v.sort_by_key(|m| (m.is_empty(), m.clone()));
-    v.dedup();
-    v
 }

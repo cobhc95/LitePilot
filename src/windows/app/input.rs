@@ -220,6 +220,7 @@ pub(super) unsafe extern "system" fn child_proc(h: HWND, msg: u32, wp: WPARAM, l
             WM_KEYDOWN | WM_SYSKEYDOWN | WM_CHAR | WM_SYSCHAR => { chip_menu::key(msg, wp); return 0; }
             WM_KEYUP | WM_SYSKEYUP => return 0,
             WM_LBUTTONDOWN | WM_KILLFOCUS => chip_menu::close(),
+            WM_MOUSEWHEEL => { chip_menu::wheel(wp); return 0; }
             _ => {}
         }
     }

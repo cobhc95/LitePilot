@@ -173,7 +173,9 @@ pub(super) unsafe fn paint(h: HWND, dc: HDC, st: &mut St) {
     st.content_h = y + st.scroll - top0 + s(6);
     st.view_h = rc.bottom - foot - help_h - top0;
     // Keep the cursor row on screen.
-    if let Some(cr) = rects.get(st.cursor) {
+    let moved = st.cursor != st.seen_cursor;
+    st.seen_cursor = st.cursor;
+    if let (true, Some(cr)) = (moved, rects.get(st.cursor)) {
         let (vt, vb) = (top0 + if search_row { s(44) } else { 0 }, rc.bottom - foot - help_h);
         if cr.top < vt { st.scroll -= vt - cr.top + s(6); } else if cr.bottom > vb { st.scroll += cr.bottom - vb + s(6); }
         if cr.top < vt || cr.bottom > vb { return paint(h, dc, st); }

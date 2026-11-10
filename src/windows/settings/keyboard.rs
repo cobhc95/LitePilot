@@ -207,3 +207,25 @@ pub fn handle_key(m: &MSG) -> bool {
         _ => false,
     }
 }
+
+/// A search box command from its right-click menu: 1 cut, 2 copy, 3 paste, 4 select all, 5 clear.
+pub(super) fn search_edit(st: &mut St, cmd: u8) {
+    match cmd {
+        1 | 2 => {
+            let text = if st.sel_all || cmd == 2 { st.query.clone() } else { st.query.clone() };
+            if !text.is_empty() { app::copy_to_clipboard(&text); }
+            if cmd == 1 { st.query.clear(); st.sel_all = false; rebuild(st); st.scroll = 0; }
+        }
+        3 => {
+            let p = clipboard_text().replace(['\r', '\n'], " ");
+            if st.sel_all { st.query.clear(); }
+            st.sel_all = false;
+            st.query.push_str(&p);
+            st.query = st.query.chars().take(40).collect();
+            rebuild(st);
+            st.scroll = 0;
+        }
+        4 => st.sel_all = !st.query.is_empty(),
+        _ => { st.query.clear(); st.sel_all = false; rebuild(st); st.scroll = 0; }
+    }
+}

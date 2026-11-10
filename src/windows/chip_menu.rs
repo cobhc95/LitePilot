@@ -181,8 +181,7 @@ fn load_models() -> Vec<Row> {
             }));
         } else {
             // API models keep the provider's own names, grouped by maker (unknown makers last, under "Other").
-            let mut ms = app::api_models(p);
-            ms.sort_by_key(|m| (m.vendor.is_empty(), m.vendor.clone()));
+            let ms = app::api_models(p);
             v.extend(ms.into_iter().map(|m| (m.name, m.id, "", p.id.clone(), m.vendor)));
         }
     }
@@ -229,7 +228,7 @@ impl Menu {
         let mut makers: Vec<&str> = self.models.iter().filter(|m| m.3 == active).map(|m| m.4.as_str()).collect();
         makers.sort_unstable();
         makers.dedup();
-        self.makers = makers.len() > 1;
+        self.makers = false; // grouping by maker is off; the lists keep the provider's order
         let hits = self.matches();
         let typing = !self.query.trim().is_empty();
         let mut items: Vec<Item> = hits.iter().map(|i| Item::Model(*i)).collect();
@@ -326,6 +325,16 @@ impl Menu {
         y += s(6) + s(26);
         (w, y + pad / 2)
     }
+}
+
+/// The wheel over the typing box or the menu itself scrolls the model list.
+pub fn wheel(wp: WPARAM) {
+    let d = ((wp >> 16) as i16 as i32 / 120) as isize;
+    MENU.with_borrow_mut(|m| if let Some(m) = m {
+        let n = m.model_count();
+        m.top = (m.top as isize - d).clamp(0, n.saturating_sub(VISIBLE_MODELS) as isize) as usize;
+    });
+    redraw();
 }
 
 // ---- Opening, closing, and keys ----
