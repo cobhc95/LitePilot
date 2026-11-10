@@ -298,18 +298,37 @@ pub(super) unsafe fn paint(h: HWND, dc: HDC, st: &mut St) {
         FillRect(dc, &RECT { left: 0, top: top0, right: rc.right, bottom: top0 + s(46) }, bgb);
         DeleteObject(bgb as _);
         let sr = RECT { left: m, top: top0 + s(4), right: m + width, bottom: top0 + s(40) };
-        round(dc, &sr, a.theme.code, if st.edit.is_none() && st.capture.is_none() { Some(mix(a.theme.bubble, a.theme.accent, 60)) } else { None }, s(12));
+        // Full accent while it has the typing, a softer one under the pointer, and plain once a row has been clicked.
+        let typing = st.edit.is_none() && st.capture.is_none() && !SEARCH_BLUR.get();
+        let border = if typing { Some(a.theme.accent) } else if SEARCH_HOVER.get() { Some(mix(a.theme.bubble, a.theme.accent, 60)) } else { Some(a.theme.bubble) };
+        round(dc, &sr, if typing { mix(a.theme.code, a.theme.bg, 25) } else { a.theme.code }, border, s(12));
         text(dc, f.icon, "\u{E721}", RECT { left: sr.left + s(14), top: sr.top, right: sr.left + s(36), bottom: sr.bottom }, a.theme.muted, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         let tr = RECT { left: sr.left + s(46), top: sr.top, right: sr.right - s(10), bottom: sr.bottom };
+        let caret = typing && CARET_ON.get();
         if st.query.is_empty() {
+            if caret { text(dc, f.body, "\u{258F}", tr, a.theme.text, DT_LEFT | DT_VCENTER | DT_SINGLELINE); }
+            let tr = RECT { left: tr.left + s(6), ..tr };
             text(dc, f.body, match st.page { Page::Home => "Search settings, e.g. memory", Page::ManageMem => "Search memories", Page::Models => "Search models or makers", _ => "Search actions and shortcuts" }, tr, a.theme.muted, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
         } else if st.sel_all {
             let tw = text_w(dc, f.body, &st.query).min(tr.right - tr.left);
             round(dc, &RECT { left: tr.left - s(2), top: tr.top + s(5), right: tr.left + tw + s(2), bottom: tr.bottom - s(5) }, mix(a.theme.code, a.theme.accent, 55), None, s(4));
             text(dc, f.body, &st.query, tr, a.theme.text, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
         } else {
-            text(dc, f.body, &format!("{}\u{258F}", st.query), tr, a.theme.text, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+            text(dc, f.body, &format!("{}{}", st.query, if caret { "\u{258F}" } else { "" }), tr, a.theme.text, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
         }
+    }
+
+    // A thin scroll bar whenever there is more than fits, with the thumb showing where the view is.
+    if st.content_h > st.view_h && st.view_h > 0 {
+        let top = top0 + if search_row { s(44) } else { 0 };
+        let bottom = rc.bottom - foot - help_h;
+        let track = RECT { left: rc.right - s(8), top, right: rc.right - s(4), bottom };
+        round(dc, &track, mix(a.theme.bg, a.theme.bubble, 55), None, s(4));
+        let span = (bottom - top).max(1);
+        let thumb_h = (span as i64 * st.view_h as i64 / st.content_h as i64).max(s(24) as i64) as i32;
+        let travel = (st.content_h - st.view_h).max(1) as i64;
+        let ty = top + ((span - thumb_h) as i64 * st.scroll.clamp(0, st.content_h - st.view_h) as i64 / travel) as i32;
+        round(dc, &RECT { left: track.left, top: ty, right: track.right, bottom: ty + thumb_h }, a.theme.muted, None, s(4));
     }
 
     // Top bar: where you are, and the status message.

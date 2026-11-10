@@ -208,6 +208,10 @@ struct Fonts { body: HFONT, bold: HFONT, small: HFONT, icon: HFONT }
 thread_local! {
     static ST: RefCell<Option<St>> = const { RefCell::new(None) };
     static HOVER: Cell<usize> = const { Cell::new(usize::MAX) };
+    /// The search box: under the pointer, left for a row (typing still goes to it), and the blinking caret's phase.
+    static SEARCH_HOVER: Cell<bool> = const { Cell::new(false) };
+    static SEARCH_BLUR: Cell<bool> = const { Cell::new(false) };
+    static CARET_ON: Cell<bool> = const { Cell::new(true) };
     /// The pointer is over the "back" crumb at the top of a sub-page.
     static BACK_HOVER: Cell<bool> = const { Cell::new(false) };
     /// The colour picker, while open: (which custom colour, [hue 0-360, saturation 0-1, brightness 0-1], active bar).
@@ -268,7 +272,14 @@ unsafe extern "system" fn proc_(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LR
             let mut back = false;
             with(|st| {
                 // A click in the search box puts typing back there (it stays out of an open field or key capture).
-                if has_search(st.page) && in_search(h, x, y) { close_picker(true); st.edit = None; st.capture = None; st.sel_all = false; return; }
+                if has_search(st.page) && in_search(h, x, y) {
+                    close_picker(true); st.edit = None; st.capture = None; st.sel_all = false;
+                    // Clicking in gives the box the typing back, with the caret showing right away.
+                    SEARCH_BLUR.set(false); CARET_ON.set(true);
+                    SetTimer(h, 77, 530, None);
+                    return;
+                }
+                SEARCH_BLUR.set(true);
                 if y < s(46) && st.page != Page::Home { back = true; return; }
                 if let Some(i) = row_at(st, x, y) {
                     if let Some((ci, ..)) = PICK.get() {
@@ -311,6 +322,8 @@ unsafe extern "system" fn proc_(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LR
             // Dragging along a colour bar.
             if wp & 1 != 0 && PICK.get().is_some() { with(|st| { if i < st.rows.len() { pick_click(st, i, x, y); } }); InvalidateRect(h, std::ptr::null(), 0); }
             let back = y < s(46) && with(|st| st.page != Page::Home).unwrap_or(false);
+            let sh = with(|st| has_search(st.page) && in_search(h, x, y)).unwrap_or(false);
+            if SEARCH_HOVER.get() != sh { SEARCH_HOVER.set(sh); InvalidateRect(h, std::ptr::null(), 0); }
             if HOVER.get() != i || BACK_HOVER.get() != back {
                 HOVER.set(i);
                 BACK_HOVER.set(back);
@@ -323,7 +336,22 @@ unsafe extern "system" fn proc_(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LR
         WM_MOUSELEAVE_SETTINGS => {
             HOVER.set(usize::MAX);
             BACK_HOVER.set(false);
+            SEARCH_HOVER.set(false);
             InvalidateRect(h, std::ptr::null(), 0);
+            0
+        }
+        WM_SETCURSOR if (lp & 0xFFFF) as u32 == 1 && SEARCH_HOVER.get() => {
+            SetCursor(LoadCursorW(std::ptr::null_mut(), IDC_IBEAM));
+            1
+        }
+        WM_TIMER if wp == 77 => {
+            // The caret blinks only while the search box has the typing.
+            let shown = with(|st| has_search(st.page) && st.edit.is_none() && st.capture.is_none()).unwrap_or(false) && !SEARCH_BLUR.get();
+            if shown {
+                CARET_ON.set(!CARET_ON.get());
+                let r = RECT { left: 0, top: s(46), right: 4000, bottom: s(90) };
+                InvalidateRect(h, &r, 0);
+            }
             0
         }
         WM_SETCURSOR if (lp & 0xFFFF) as u32 == 1 && cursor_on_clickable(h) => {
@@ -424,6 +452,7 @@ unsafe extern "system" fn proc_(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LR
         }
         WM_CLOSE => { DestroyWindow(h); 0 }
         WM_DESTROY => {
+            KillTimer(h, 77);
             close_picker(true);
             a.settings = std::ptr::null_mut();
             // Back to the chat: the popup gets focus again, on its typing box.
@@ -478,6 +507,7 @@ pub fn open() {
         ST.set(Some(st));
         let h = CreateWindowExW(WS_EX_TOPMOST | WS_EX_APPWINDOW, cn.as_ptr(), w(&format!("LitePilot Settings {}", crate::core::VERSION)).as_ptr(), style, x, y, ww, wh, a.hwnd, std::ptr::null_mut(), inst, std::ptr::null());
         a.settings = h;
+        SetTimer(h, 77, 530, None);
         refit(h);
         if a.theme.bg < 0x808080 {
             let dark: i32 = 1;

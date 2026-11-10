@@ -177,6 +177,7 @@ pub(super) fn char_in(h: HWND, c: char) {
     with(|st| {
         if c.is_control() { return; }
         if st.capture.is_some() || PICK.get().is_some() { return; }
+        if st.edit.is_none() { SEARCH_BLUR.set(false); CARET_ON.set(true); }
         if let Some((_, t)) = st.edit.as_mut() { if t.chars().count() < 200 { t.push(c); } return; }
         // Typing searches: every setting on the home page, the shortcut list on its own page.
         if has_search(st.page) && (st.sel_all || st.query.chars().count() < 40) {
