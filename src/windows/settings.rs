@@ -43,7 +43,7 @@ const LIMIT_STEPS: [u32; 8] = [50, 100, 200, 500, 1000, 2000, 5000, 10000];
 const CLOSE_STEPS: [u32; 14] = [1, 2, 3, 5, 10, 15, 20, 30, 45, 60, 90, 120, 180, 240];
 
 #[derive(Clone, Copy, PartialEq)]
-enum Page { Home, Login(&'static str), Api, Startup, Appearance, Keys, Memory, ChatMem, ManageMem, Tidy, ImpExp, Limits, Data, Backup }
+enum Page { Home, Login(&'static str), Api, Models, Startup, Appearance, Keys, Memory, ChatMem, ManageMem, Tidy, ImpExp, Limits, Data, Backup }
 
 #[derive(Clone, Copy, PartialEq)]
 enum Icon { G(&'static str), Chatgpt, Claude }
@@ -55,10 +55,10 @@ enum Pick { Theme, Palette, Font, Size, Spacing, Provider, TrimAfter, CloseAfter
 #[derive(Clone, Copy, PartialEq)]
 enum Field { Hotkey, ApiName, ApiUrl, ApiModel, ApiKey, Custom(usize), MemAdd, Passphrase }
 #[derive(Clone, Copy, PartialEq)]
-enum Run { UpdateCheck, SignIn, SignOut, ApiSave, ApiRemove, KeysReset, MemClear, MemTidy, EngineClear, MemPaste, MemPrompt, DataOpen, DataCopy, DataWipe(u8), Export, Import, QuickExport, TidyNow, TidyApply, TidyDiscard, TidyUndo }
+enum Run { ModelsAll, ModelsNone, UpdateCheck, SignIn, SignOut, ApiSave, ApiRemove, KeysReset, MemClear, MemTidy, EngineClear, MemPaste, MemPrompt, DataOpen, DataCopy, DataWipe(u8), Export, Import, QuickExport, TidyNow, TidyApply, TidyDiscard, TidyUndo }
 
 #[derive(Clone, Copy, PartialEq)]
-enum Kind { Nav(Page), Jump(Page, usize), Toggle(Tog), Pick(Pick), Field(Field), Run(Run), Key(usize), MemItem(usize), Info, Hint, Preview }
+enum Kind { Nav(Page), Jump(Page, usize), Toggle(Tog), Pick(Pick), Field(Field), Run(Run), Key(usize), MemItem(usize), ModelShow(usize), Info, Hint, Preview }
 
 impl Kind {
     fn selectable(self) -> bool { !matches!(self, Kind::Info | Kind::Hint | Kind::Preview) }
@@ -90,6 +90,8 @@ fn mem_help(st: &St) -> String {
         Some(Kind::Nav(Page::Tidy)) => "Off by default. Uses a model you choose to merge repeated facts, after you review them.".into(),
         Some(Kind::Nav(Page::Limits)) => "The most facts kept, and whether every account shares one list.".into(),
         Some(Kind::Nav(Page::ManageMem)) => "See what is remembered, search it, delete one, or clear everything.".into(),
+        Some(Kind::Nav(Page::Models)) => "Choose which of this provider's models appear in the model menu, so the list stays short.".into(),
+        Some(Kind::ModelShow(_)) => "Space or Enter shows or hides this model in the model menu.".into(),
         Some(Kind::MemItem(_)) => "Press Delete to remove the highlighted fact.".into(),
         Some(Kind::Run(Run::MemClear | Run::EngineClear)) => "Asks twice: press Enter again to confirm.".into(),
         Some(Kind::Run(Run::MemPaste)) => "Reads a list from the clipboard, one fact per line. Repeats and secrets are skipped.".into(),

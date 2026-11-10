@@ -1138,7 +1138,8 @@ pub fn model_list(p: &Profile) -> Vec<(String, String)> {
         [("Default", ""), ("Opus", "opus"), ("Sonnet", "sonnet"), ("Haiku", "haiku")].iter().map(|m| (m.0.to_string(), m.1.to_string())).collect()
     } else if !p.is_login() {
         // API accounts: the models the provider listed for this key (see core::models), with the current one kept even if unlisted.
-        let mut v: Vec<(String, String)> = crate::core::models::load(&app().data, &p.id).into_iter().map(|m| (m.id.clone(), m.id)).collect();
+        let hide = crate::core::models::hidden(&app().data, &p.id);
+        let mut v: Vec<(String, String)> = crate::core::models::load(&app().data, &p.id).into_iter().filter(|m| m.id == p.model || !hide.contains(&m.id)).map(|m| (m.id.clone(), m.id)).collect();
         if !p.model.is_empty() && !v.iter().any(|m| m.1 == p.model) { v.insert(0, (p.model.clone(), p.model.clone())); }
         v
     } else {

@@ -221,6 +221,7 @@ pub(super) unsafe fn paint(h: HWND, dc: HDC, st: &mut St) {
         match r.kind {
             Kind::Nav(_) | Kind::Jump(..) => { text(dc, f.icon, "\u{E76C}", RECT { left: rx - s(16), top: rr.top, right: rx, bottom: rr.bottom }, a.theme.muted, DT_CENTER | DT_VCENTER | DT_SINGLELINE); right = rx - s(20); }
             Kind::Toggle(t) => { toggle_switch(dc, toggle_on(t), rx, rr); right = rx - s(40); }
+            Kind::ModelShow(i) => { toggle_switch(dc, model_shown(st, i), rx, rr); right = rx - s(40); }
             Kind::Pick(p) => {
                 let (vals, cur) = pick_values(p, st);
                 let val = vals.get(cur).cloned().unwrap_or_default();
@@ -353,7 +354,7 @@ pub(super) unsafe fn paint(h: HWND, dc: HDC, st: &mut St) {
         else if st.capture.is_some() { vec![("Esc", "cancel")] }
         else if PICK.get().is_some() { vec![("\u{2190}\u{2192}", "adjust"), ("\u{2191}\u{2193}", "next bar"), ("Shift", "bigger steps"), ("Enter", "apply"), ("F2", "hex"), ("Esc", "cancel")] }
         else { match kind {
-            Some(Kind::Toggle(_)) => vec![("\u{2191}\u{2193}", "move"), ("Space", "switch"), ("Esc", "back")],
+            Some(Kind::Toggle(_) | Kind::ModelShow(_)) => vec![("\u{2191}\u{2193}", "move"), ("Space", "switch"), ("Esc", "back")],
             Some(Kind::Pick(_)) => vec![("\u{2191}\u{2193}", "move"), ("\u{2190}\u{2192}", "change"), ("Esc", "back")],
             Some(Kind::Field(_)) => vec![("\u{2191}\u{2193}", "move"), ("Enter", "edit"), ("Esc", "back")],
             Some(Kind::Key(_)) => vec![("\u{2191}\u{2193}", "move"), ("Enter", "change keys"), ("Del", "clear"), ("Esc", "back")],

@@ -211,6 +211,13 @@ pub(super) fn run(h: HWND, st: &mut St, r: Run) {
             }
         }
         Run::ApiSave => api_save(h, st),
+        Run::ModelsAll | Run::ModelsNone => {
+            if let Some(p) = api_profiles().get(st.api_sel) {
+                let all: Vec<String> = if r == Run::ModelsNone { crate::core::models::load(&app().data, &p.id).into_iter().map(|m| m.id).filter(|id| *id != p.model).collect() } else { vec![] };
+                crate::core::models::set_hidden(&app().data, &p.id, &all);
+            }
+            rebuild(st);
+        }
         Run::ApiRemove => api_remove(st),
         Run::MemClear => {
             if !st.clear_armed { st.clear_armed = true; st.status = "Press Enter again to clear every memory.".into(); }
@@ -359,6 +366,7 @@ pub(super) fn activate(h: HWND, st: &mut St) {
         Kind::Run(r) => run(h, st, r),
         Kind::Key(_) => { if let Kind::Key(i) = r.kind { st.capture = Some(Cap::Key(i)); st.status = "Press the new keys. Esc cancels, Backspace clears.".into(); } }
         Kind::MemItem(_) => { st.status = "Press Delete to remove it.".into(); }
+        Kind::ModelShow(i) => toggle_model(st, i),
         Kind::Info | Kind::Hint | Kind::Preview => {}
     }
 }
@@ -369,8 +377,24 @@ pub(super) fn go_back(h: HWND, st: &mut St) {
     if st.page == Page::Home { unsafe { PostMessageW(h, WM_CLOSE, 0, 0); } return; }
     // Back lands on the item that was opened, one level up.
     let from = st.page;
-    let parent = if matches!(from, Page::ManageMem | Page::Tidy | Page::ImpExp | Page::Limits) { Page::ChatMem } else { Page::Home };
+    let parent = if from == Page::Models { Page::Api } else if matches!(from, Page::ManageMem | Page::Tidy | Page::ImpExp | Page::Limits) { Page::ChatMem } else { Page::Home };
     if parent == Page::ChatMem { st.mem = memory_store::load(&app::mem_dir()); }
     let sel = rows_for(parent, st, "").iter().filter(|r| r.kind.selectable()).position(|r| matches!(r.kind, Kind::Nav(p) if p == from)).unwrap_or(0);
     goto(st, parent, sel);
+}
+
+/// Whether the model at `i` in this account's list shows in the model menu.
+pub(super) fn model_shown(st: &St, i: usize) -> bool {
+    let Some(p) = api_profiles().get(st.api_sel).cloned() else { return true };
+    let found = crate::core::models::load(&app().data, &p.id);
+    found.get(i).is_none_or(|m| !crate::core::models::hidden(&app().data, &p.id).contains(&m.id))
+}
+
+pub(super) fn toggle_model(st: &mut St, i: usize) {
+    let Some(p) = api_profiles().get(st.api_sel).cloned() else { return };
+    let Some(m) = crate::core::models::load(&app().data, &p.id).into_iter().nth(i) else { return };
+    let mut hide = crate::core::models::hidden(&app().data, &p.id);
+    if let Some(k) = hide.iter().position(|x| *x == m.id) { hide.remove(k); } else { hide.push(m.id); }
+    crate::core::models::set_hidden(&app().data, &p.id, &hide);
+    rebuild(st);
 }

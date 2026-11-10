@@ -20,6 +20,8 @@ pub enum Event {
 pub enum ApiFormat {
     OpenAi,
     Anthropic,
+    /// The newer OpenAI "Responses" format (`/responses`): OpenCode serves GPT, Grok and Muse models this way.
+    Responses,
 }
 
 pub struct HttpRequest {
@@ -57,6 +59,14 @@ pub fn build_request(f: ApiFormat, base: &str, model: &str, key: &str, msgs: &[M
                 body: json!({"model": model, "stream": true, "stream_options": {"include_usage": true}, "messages": messages}).to_string(),
             }
         }
+        ApiFormat::Responses => {
+            if !key.is_empty() {
+                headers.push(("Authorization".into(), format!("Bearer {key}")));
+            }
+            let mut body = json!({"model": model, "stream": true, "store": false, "input": chat_msgs(f, msgs, att)});
+            if !system.is_empty() { body["instructions"] = system.into(); }
+            HttpRequest { url: format!("{base}/responses"), headers, body: body.to_string() }
+        }
         ApiFormat::Anthropic => {
             headers.push(("x-api-key".into(), key.into()));
             headers.push(("anthropic-version".into(), "2023-06-01".into()));
@@ -86,6 +96,23 @@ pub fn parse_sse(f: ApiFormat, data: &str) -> Option<Event> {
             let t = v["choices"][0]["delta"]["content"].as_str()?;
             (!t.is_empty()).then(|| Event::Text(t.to_string()))
         }
+        ApiFormat::Responses => match v["type"].as_str()? {
+            "response.output_text.delta" => v["delta"].as_str().filter(|t| !t.is_empty()).map(|t| Event::Text(t.into())),
+            "response.output_item.added" => match v["item"]["type"].as_str() {
+                Some("reasoning") => Some(Event::Status("Thinking".into())),
+                Some("web_search_call") => Some(Event::Status("Searching the web".into())),
+                _ => None,
+            },
+            // The reply's own tokens: input the cache didn't serve, plus output. The stream closing ends the reply.
+            "response.completed" => {
+                let u = &v["response"]["usage"];
+                let n = u["input_tokens"].as_u64()?.saturating_sub(u["input_tokens_details"]["cached_tokens"].as_u64().unwrap_or(0)) + u["output_tokens"].as_u64().unwrap_or(0);
+                Some(Event::Tokens(n))
+            }
+            "response.failed" | "response.incomplete" => Some(Event::Error(v["response"]["error"]["message"].as_str().or(v["response"]["incomplete_details"]["reason"].as_str()).unwrap_or("The model stopped without a reply.").to_string())),
+            "error" => Some(Event::Error(v["message"].as_str().unwrap_or("Unknown API error").to_string())),
+            _ => None,
+        },
         ApiFormat::Anthropic => match v["type"].as_str()? {
             "content_block_delta" => v["delta"]["text"].as_str().map(|t| Event::Text(t.into())),
             "content_block_start" => block_status(&v["content_block"]),
@@ -212,6 +239,18 @@ pub fn flatten_prompt(msgs: &[Msg]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn responses_format_builds_and_streams() {
+        let m = [Msg::new("user", "hi")];
+        let r = build_request(ApiFormat::Responses, "https://x/v1/", "muse", "k", &m, std::path::Path::new("."), "likes tea");
+        assert_eq!(r.url, "https://x/v1/responses");
+        let b: Value = serde_json::from_str(&r.body).unwrap();
+        assert_eq!((b["instructions"].as_str(), b["input"][0]["content"].as_str(), b["stream"].as_bool()), (Some("likes tea"), Some("hi"), Some(true)));
+        assert_eq!(parse_sse(ApiFormat::Responses, r#"{"type":"response.output_text.delta","delta":"Hel"}"#), Some(Event::Text("Hel".into())));
+        assert_eq!(parse_sse(ApiFormat::Responses, r#"{"type":"response.completed","response":{"usage":{"input_tokens":10,"input_tokens_details":{"cached_tokens":4},"output_tokens":5}}}"#), Some(Event::Tokens(11)));
+        assert!(matches!(parse_sse(ApiFormat::Responses, r#"{"type":"error","message":"bad"}"#), Some(Event::Error(e)) if e == "bad"));
+        assert_eq!(parse_sse(ApiFormat::Responses, r#"{"type":"response.created"}"#), None);
+    }
     #[test]
     fn openai_stream() {
         let f = ApiFormat::OpenAi;

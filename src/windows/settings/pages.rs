@@ -9,6 +9,7 @@ pub(super) fn page_title(p: Page) -> &'static str {
         Page::Login("claude") => "Claude",
         Page::Login(_) => "ChatGPT",
         Page::Api => "API key",
+        Page::Models => "Models in the menu",
         Page::Startup => "Shortcut and startup",
         Page::Appearance => "Appearance",
         Page::Keys => "Keyboard shortcuts",
@@ -188,8 +189,20 @@ pub(super) fn rows_for(page: Page, st: &St, query: &str) -> Vec<Row> {
             let mut v = vec![row(g(pick_meta(Pick::Provider).0), "Provider", "", Kind::Pick(Pick::Provider))];
             for f in [Field::ApiName, Field::ApiUrl, Field::ApiModel, Field::ApiKey] { let m = field_meta(f); v.push(row(g(m.0), &m.1, "", Kind::Field(f))); }
             v.push(row(g("\u{E74E}"), "Save and use this provider", "", Kind::Run(Run::ApiSave)));
+            if let Some(p) = api_profiles().get(st.api_sel) {
+                let n = crate::core::models::load(&app().data, &p.id).len();
+                if n > 0 { v.push(row(g("\u{E71D}"), "Models in the menu", &format!("{n} found. Choose which to show"), Kind::Nav(Page::Models))); }
+            }
             if api_profiles().get(st.api_sel).is_some() { v.push(row(g("\u{E74D}"), "Remove this provider and its key", "", Kind::Run(Run::ApiRemove))); }
             v.push(hint("Pay your provider directly. No extra downloads and no background apps. Your key is kept in Windows Credential Manager; leave it blank to keep the one already saved. Ctrl+S saves."));
+            v
+        }
+        Page::Models => {
+            let Some(p) = api_profiles().get(st.api_sel).cloned() else { return vec![hint("Save this provider first.")] };
+            let (found, hide) = (crate::core::models::load(&app().data, &p.id), crate::core::models::hidden(&app().data, &p.id));
+            let mut v = vec![row(g("\u{E73A}"), "Show every model", "", Kind::Run(Run::ModelsAll)), row(g("\u{E711}"), "Hide every model", "Except the one in use", Kind::Run(Run::ModelsNone))];
+            for (i, m) in found.iter().enumerate() { let _ = &hide; v.push(row(g("\u{E950}"), &m.id, "", Kind::ModelShow(i))); }
+            v.push(hint("Only the models switched on appear in the model menu. Saving the provider again refreshes this list; your choices are kept."));
             v
         }
         Page::Startup => {

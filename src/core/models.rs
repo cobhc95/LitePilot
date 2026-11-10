@@ -16,7 +16,7 @@ pub struct Found {
 /// The URL of a provider's model list.
 pub fn list_url(base: &str) -> String { format!("{}/models", base.trim().trim_end_matches('/')) }
 
-/// Reads a `/models` reply. Models the app can't talk to (OpenCode's `responses` and Gemini-only ones, embeddings)
+/// Reads a `/models` reply. Models the app can't talk to (OpenCode's Gemini-only ones, embeddings)
 /// are left out, so everything listed works.
 pub fn parse(body: &str, format: ApiFormat, base: &str) -> Vec<Found> {
     let Ok(v) = serde_json::from_str::<Value>(body) else { return vec![] };
@@ -28,6 +28,7 @@ pub fn parse(body: &str, format: ApiFormat, base: &str) -> Vec<Found> {
         let (f, b) = match m["api"].as_object() {
             Some(api) => {
                 if let Some(u) = api.get("chat-completions").and_then(|a| a["base_url"].as_str()) { (ApiFormat::OpenAi, u) }
+                else if let Some(u) = api.get("responses").and_then(|a| a["base_url"].as_str()) { (ApiFormat::Responses, u) }
                 else if let Some(u) = api.get("messages").and_then(|a| a["base_url"].as_str()) { (ApiFormat::Anthropic, u) }
                 else { continue }
             }
@@ -44,7 +45,7 @@ fn path(dir: &Path, account: &str) -> PathBuf {
 }
 
 pub fn save(dir: &Path, account: &str, list: &[Found]) {
-    let v: Vec<Value> = list.iter().map(|m| json!({"id": m.id, "anthropic": m.format == ApiFormat::Anthropic, "base": m.base})).collect();
+    let v: Vec<Value> = list.iter().map(|m| json!({"id": m.id, "fmt": match m.format { ApiFormat::Anthropic => "anthropic", ApiFormat::Responses => "responses", ApiFormat::OpenAi => "openai" }, "base": m.base})).collect();
     let _ = std::fs::write(path(dir, account), Value::Array(v).to_string());
 }
 
@@ -52,12 +53,28 @@ pub fn load(dir: &Path, account: &str) -> Vec<Found> {
     let Some(v) = std::fs::read_to_string(path(dir, account)).ok().and_then(|s| serde_json::from_str::<Value>(&s).ok()) else { return vec![] };
     v.as_array().map(|a| a.iter().filter_map(|m| Some(Found {
         id: m["id"].as_str()?.into(),
-        format: if m["anthropic"].as_bool() == Some(true) { ApiFormat::Anthropic } else { ApiFormat::OpenAi },
+        format: match m["fmt"].as_str() { Some("anthropic") => ApiFormat::Anthropic, Some("responses") => ApiFormat::Responses, _ => ApiFormat::OpenAi },
         base: m["base"].as_str()?.into(),
     })).collect()).unwrap_or_default()
 }
 
-pub fn forget(dir: &Path, account: &str) { let _ = std::fs::remove_file(path(dir, account)); }
+pub fn forget(dir: &Path, account: &str) {
+    let _ = std::fs::remove_file(path(dir, account));
+    let _ = std::fs::remove_file(hidden_path(dir, account));
+}
+
+fn hidden_path(dir: &Path, account: &str) -> PathBuf {
+    path(dir, account).with_file_name(format!("models-hidden-{}.json", account.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_').collect::<String>()))
+}
+
+/// Models the user chose not to show in the model menu (by id).
+pub fn hidden(dir: &Path, account: &str) -> Vec<String> {
+    std::fs::read_to_string(hidden_path(dir, account)).ok().and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok()).unwrap_or_default()
+}
+
+pub fn set_hidden(dir: &Path, account: &str, ids: &[String]) {
+    let _ = std::fs::write(hidden_path(dir, account), json!(ids).to_string());
+}
 
 /// True when the saved list is missing or older than ten minutes.
 pub fn stale(dir: &Path, account: &str) -> bool {
@@ -80,12 +97,14 @@ mod tests {
             {"id":"glm-5","type":"chat","api":{"chat-completions":{"base_url":"https://x/openai/v1"}}},
             {"id":"claude-opus-5","type":"chat","api":{"messages":{"base_url":"https://x/anthropic/v1/"}}},
             {"id":"gpt-5","type":"chat","api":{"responses":{"base_url":"https://x/openai/v1"}}},
+            {"id":"gemini-x","type":"chat","api":{"generate-content":{"base_url":"https://x/google"}}},
             {"id":"embed","type":"embedding"},
             {"id":"glm-5","type":"chat","api":{"chat-completions":{"base_url":"https://x/openai/v1"}}}]}"#;
         let l = parse(body, ApiFormat::OpenAi, "https://d");
         assert_eq!(l, vec![
             Found { id: "glm-5".into(), format: ApiFormat::OpenAi, base: "https://x/openai/v1".into() },
             Found { id: "claude-opus-5".into(), format: ApiFormat::Anthropic, base: "https://x/anthropic/v1".into() },
+            Found { id: "gpt-5".into(), format: ApiFormat::Responses, base: "https://x/openai/v1".into() },
         ]);
     }
     #[test]
@@ -95,6 +114,17 @@ mod tests {
         assert_eq!(l[0].base, "https://api.openai.com/v1");
         assert!(parse("not json", ApiFormat::OpenAi, "").is_empty());
         assert_eq!(list_url(" https://a/v1/ "), "https://a/v1/models");
+    }
+    #[test]
+    fn hidden_models_are_remembered() {
+        let dir = std::env::temp_dir().join(format!("lp-hidden-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(hidden(&dir, "a-1").is_empty());
+        set_hidden(&dir, "a-1", &["x".to_string(), "y".to_string()]);
+        assert_eq!(hidden(&dir, "a-1"), vec!["x".to_string(), "y".to_string()]);
+        forget(&dir, "a-1");
+        assert!(hidden(&dir, "a-1").is_empty());
+        std::fs::remove_dir_all(dir).unwrap();
     }
     #[test]
     fn saved_list_routes_chats() {

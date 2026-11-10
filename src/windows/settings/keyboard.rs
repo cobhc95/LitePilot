@@ -161,6 +161,7 @@ pub(super) fn key_down(h: HWND, vk: u16) {
             },
             VK_SPACE => match kind {
                 Some(Kind::Toggle(t)) => { let on = !toggle_on(t); set_toggle(h, st, t, on); }
+                Some(Kind::ModelShow(i)) => toggle_model(st, i),
                 Some(Kind::Pick(p)) => step_pick(h, st, p, 1),
                 Some(Kind::Nav(_)) | Some(Kind::Jump(..)) | Some(Kind::Run(_)) | Some(Kind::Field(_)) | Some(Kind::Key(_)) => activate(h, st),
                 _ => {}

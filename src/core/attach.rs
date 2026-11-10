@@ -75,6 +75,8 @@ fn read_text(p: &Path, name: &str) -> Option<String> {
 fn media_block(f: ApiFormat, name: &str, k: &Kind, data: &[u8]) -> Option<Value> {
     Some(match (k, f) {
         (Kind::Image(m), ApiFormat::OpenAi) => json!({"type": "image_url", "image_url": {"url": format!("data:{m};base64,{}", b64(data))}}),
+        (Kind::Image(m), ApiFormat::Responses) => json!({"type": "input_image", "image_url": format!("data:{m};base64,{}", b64(data))}),
+        (Kind::Pdf, ApiFormat::Responses) => json!({"type": "input_file", "filename": name, "file_data": format!("data:application/pdf;base64,{}", b64(data))}),
         (Kind::Image(m), ApiFormat::Anthropic) => json!({"type": "image", "source": {"type": "base64", "media_type": m, "data": b64(data)}}),
         (Kind::Pdf, ApiFormat::OpenAi) => json!({"type": "file", "file": {"filename": name, "file_data": format!("data:application/pdf;base64,{}", b64(data))}}),
         (Kind::Pdf, ApiFormat::Anthropic) => json!({"type": "document", "source": {"type": "base64", "media_type": "application/pdf", "data": b64(data)}}),
@@ -104,8 +106,11 @@ fn part(f: ApiFormat, n: &str, dir: &Path, budget: &mut u64) -> Value {
 pub fn content(f: ApiFormat, text: &str, dir: &Path, budget: &mut u64) -> Value {
     let ns = names(text);
     if ns.is_empty() { return Value::String(text.to_string()); }
-    let mut parts = vec![json!({"type": "text", "text": text})];
+    let mut parts = vec![json!({"type": if f == ApiFormat::Responses { "input_text" } else { "text" }, "text": text})];
     parts.extend(ns.iter().map(|n| part(f, n, dir, budget)));
+    if f == ApiFormat::Responses {
+        for p in parts.iter_mut().filter(|p| p["type"] == "text") { p["type"] = "input_text".into(); }
+    }
     Value::Array(parts)
 }
 
