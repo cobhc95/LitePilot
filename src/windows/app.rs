@@ -751,6 +751,8 @@ unsafe fn returnable(h: HWND) -> bool {
 
 pub fn show() {
     let a = app();
+    // Keep an API account's model list fresh in the background (does nothing for Claude and ChatGPT, or when it is recent).
+    refresh_models_if_stale(&a.cfg.active_profile().clone());
     if a.visible { return unsafe {
         // Open but not focused: remember the window you came from, so hiding goes back there and not to
         // whatever was in front when LitePilot first opened.

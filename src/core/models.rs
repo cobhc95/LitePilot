@@ -136,7 +136,9 @@ pub fn set_hidden(dir: &Path, account: &str, ids: &[String]) {
 
 /// True when the saved list is missing or older than ten minutes.
 pub fn stale(dir: &Path, account: &str) -> bool {
-    std::fs::metadata(path(dir, account)).and_then(|m| m.modified()).ok()
+    // A list saved by an older version (no makers or efforts in it) is refreshed too.
+    let old_format = std::fs::read_to_string(path(dir, account)).is_ok_and(|s| s.len() > 2 && !s.contains("\"vendor\""));
+    old_format || std::fs::metadata(path(dir, account)).and_then(|m| m.modified()).ok()
         .and_then(|t| t.elapsed().ok()).is_none_or(|e| e.as_secs() > 600)
 }
 
