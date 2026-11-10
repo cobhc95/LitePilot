@@ -13,7 +13,10 @@ use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::*;
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
-const VISIBLE_MODELS: usize = 8;
+const VISIBLE_MODELS: usize = 10;
+
+/// (label, slug, hint, account id, maker). Makers group an API account's models under headings.
+type Row = (String, String, &'static str, String, String);
 
 #[derive(Clone, Copy, PartialEq)]
 enum Item { Model(usize), Effort, Account }
@@ -24,7 +27,9 @@ struct Menu {
     sel: bool,
     /// (label, slug, hint, account id), best first: the current account's models, then other accounts'
     /// (those only show while you type).
-    models: Vec<(String, String, &'static str, String)>,
+    models: Vec<Row>,
+    /// True when the account in use has models from two or more makers: they get headings.
+    makers: bool,
     items: Vec<Item>,
     cursor: usize,
     top: usize,
@@ -160,21 +165,28 @@ fn rank(label: &str) -> u32 {
     old + if l.contains("luna") || l == "haiku" { 0 } else if l.contains("terra") && !l.starts_with("5.") { 1 } else if l.contains("sol") || l == "sonnet" { 2 } else if l.contains("astra") || l == "opus" { 3 } else if l == "default" { 20 } else { 4 }
 }
 
-fn load_models() -> Vec<(String, String, &'static str, String)> {
+fn load_models() -> Vec<Row> {
     let a = app();
     let active = a.cfg.active.clone();
-    let mut v: Vec<(String, String, &'static str, String)> = vec![];
+    let mut v: Vec<Row> = vec![];
     // API accounts list what their key can use (found when the key was saved), but only the active one is shown.
     for p in a.cfg.profiles.iter().filter(|p| p.is_login() || p.id == active) {
         if !p.is_login() { app::refresh_models_if_stale(p); }
         // Another account's Default means nothing out of context, so only real models are offered from it.
         let other = p.id != active;
-        v.extend(app::model_list(p).into_iter().filter(|(_, slug)| !(other && slug.is_empty())).map(|(name, slug)| {
-            let (label, hint) = describe(&slug, &name);
-            (label, slug, hint, p.id.clone())
-        }));
+        if p.is_login() {
+            v.extend(app::model_list(p).into_iter().filter(|(_, slug)| !(other && slug.is_empty())).map(|(name, slug)| {
+                let (label, hint) = describe(&slug, &name);
+                (label, slug, hint, p.id.clone(), String::new())
+            }));
+        } else {
+            // API models keep the provider's own names, grouped by maker (unknown makers last, under "Other").
+            let mut ms = app::api_models(p);
+            ms.sort_by_key(|m| (m.vendor.is_empty(), m.vendor.clone()));
+            v.extend(ms.into_iter().map(|m| (m.name, m.id, "", p.id.clone(), m.vendor)));
+        }
     }
-    v.sort_by_key(|m| (m.3 != active, rank(&m.0)));
+    v.sort_by_key(|m| (m.3 != active, if m.4.is_empty() && app().cfg.profiles.iter().any(|p| p.id == m.3 && p.is_login()) { rank(&m.0) } else { 0 }));
     v
 }
 
@@ -189,13 +201,14 @@ fn parse(q: &str) -> (Vec<String>, Option<&'static str>) {
     let (mut words, mut effort) = (vec![], None);
     for t in q.split_whitespace().map(|t| t.to_lowercase()) {
         let e = if t.len() >= 2 { ["low", "medium", "high"].into_iter().find(|e| e.starts_with(t.as_str())) } else { None };
+        let e = e.or_else(|| ["xhigh", "max", "minimal"].into_iter().find(|e| *e == t));
         match e { Some(e) => effort = Some(e), None => words.push(t) }
     }
     (words, effort)
 }
 
 fn effort_label(v: &str) -> &'static str {
-    match v { "low" => "Low", "medium" => "Med", "high" => "High", _ => "Default" }
+    match v { "low" => "Low", "medium" => "Med", "high" => "High", "xhigh" => "XHigh", "max" => "Max", "minimal" => "Min", "none" => "None", _ => "Default" }
 }
 
 impl Menu {
@@ -205,13 +218,18 @@ impl Menu {
         self.models.iter().enumerate().filter(|(_, m)| {
             // Other accounts' models show only while you type ("haiku" from the ChatGPT account).
             if words.is_empty() && m.3 != *active { return false; }
-            let hay = format!("{} {}", m.0, m.1).to_lowercase();
+            let hay = format!("{} {} {}", m.0, m.1, m.4).to_lowercase();
             words.iter().all(|w| hay.contains(w.as_str()))
         }).map(|(i, _)| i).collect()
     }
 
     /// Rebuilds the selectable rows for the query, keeping the cursor on something sensible.
     fn refresh(&mut self, keep_current: bool) {
+        let active = app().cfg.active.clone();
+        let mut makers: Vec<&str> = self.models.iter().filter(|m| m.3 == active).map(|m| m.4.as_str()).collect();
+        makers.sort_unstable();
+        makers.dedup();
+        self.makers = makers.len() > 1;
         let hits = self.matches();
         let typing = !self.query.trim().is_empty();
         let mut items: Vec<Item> = hits.iter().map(|i| Item::Model(*i)).collect();
@@ -244,12 +262,20 @@ impl Menu {
     /// True when the row at `k` starts a new group within an account: the generation changes from the row
     /// above (6 to 5.6, or 5.6 to Default). Models without a number (Claude's Haiku, Sonnet, Opus) never split.
     fn starts_group(&self, k: usize) -> bool {
-        if k == 0 || self.starts_others(k) { return false; }
+        if k == 0 || self.starts_others(k) || self.makers { return false; }
         let gen_of = |it: &Item| match it { Item::Model(i) => Some((generation(&self.models[*i].0), &self.models[*i].3)), _ => None };
         match (self.items.get(k - 1).and_then(gen_of), self.items.get(k).and_then(gen_of)) {
             (Some((Some(a), pa)), Some((b, pb))) => pa == pb && Some(a) != b,
             _ => false,
         }
+    }
+
+    /// The maker heading above the row at `k`, if it begins one: the first row in view, or where the maker changes.
+    fn heading_at(&self, k: usize) -> Option<String> {
+        if !self.makers { return None; }
+        let maker = |k: usize| match self.items.get(k) { Some(Item::Model(i)) if !self.is_other(*i) => Some(self.models[*i].4.clone()), _ => None };
+        let here = maker(k)?;
+        if k == self.top || k == 0 || maker(k - 1).as_ref() != Some(&here) { Some(if here.is_empty() { "Other".to_string() } else { here }) } else { None }
     }
 
     fn model_count(&self) -> usize { self.items.iter().filter(|i| matches!(i, Item::Model(_))).count() }
@@ -277,7 +303,7 @@ impl Menu {
                 Item::Model(_) => {
                     if k >= self.top && k < self.top + VISIBLE_MODELS {
                         if k > self.top && self.starts_group(k) { y += s(9); }
-                        if self.starts_others(k) { y += s(22); }
+                        if self.starts_others(k) || self.heading_at(k).is_some() { y += s(22); }
                         self.rects.push((it, RECT { left: pad, top: y, right: w - pad, bottom: y + row }));
                         y += row;
                     }
@@ -325,7 +351,7 @@ pub fn toggle() {
             RegisterClassW(&wc);
         });
         want_usage();
-        let mut m = Menu { hwnd: std::ptr::null_mut(), query: String::new(), sel: false, models: load_models(), items: vec![], cursor: 0, top: 0, rects: vec![], search: std::mem::zeroed(), usage: std::mem::zeroed(), usage_seen: 0 };
+        let mut m = Menu { hwnd: std::ptr::null_mut(), query: String::new(), sel: false, models: load_models(), makers: false, items: vec![], cursor: 0, top: 0, rects: vec![], search: std::mem::zeroed(), usage: std::mem::zeroed(), usage_seen: 0 };
         m.refresh(true);
         let (w_, h_) = m.layout();
         let mut hr: RECT = std::mem::zeroed();
@@ -376,10 +402,9 @@ fn set_effort(v: &str) {
 
 fn step_effort(dir: i32) {
     let a = app();
-    if !a.cfg.active_profile().is_login() { return; }
-    let all = ["", "low", "medium", "high"];
+    let all = app::effort_choices(a.cfg.active_profile());
     let cur = all.iter().position(|e| *e == a.cfg.active_profile().effort).unwrap_or(0) as i32;
-    set_effort(all[(cur + dir).clamp(0, 3) as usize]);
+    set_effort(&all[(cur + dir).clamp(0, all.len() as i32 - 1) as usize]);
     // An effort typed in the box would now disagree with the arrows, so drop it.
     // The highlight stays on the same row (Sonnet stays Sonnet) when the rows are rebuilt.
     MENU.with_borrow_mut(|m| if let Some(m) = m {
@@ -395,10 +420,9 @@ fn step_effort(dir: i32) {
 /// Effort one step along Default, Low, Medium, High, wrapping round (a click on the row itself).
 fn cycle_effort() {
     let a = app();
-    if !a.cfg.active_profile().is_login() { return; }
-    let all = ["", "low", "medium", "high"];
+    let all = app::effort_choices(a.cfg.active_profile());
     let cur = all.iter().position(|e| *e == a.cfg.active_profile().effort).unwrap_or(0);
-    set_effort(all[(cur + 1) % 4]);
+    set_effort(&all[(cur + 1) % all.len()]);
     redraw();
 }
 
@@ -600,12 +624,19 @@ unsafe fn paint(h: HWND, dc: HDC, m: &Menu) {
     }
 
     let (_, typed_effort) = parse(&m.query);
-    let effort_now = typed_effort.unwrap_or(p.effort.as_str());
+    let choices = app::effort_choices(&p);
+    // An effort the model in use doesn't accept isn't sent, so it isn't shown either.
+    let effort_now = typed_effort.unwrap_or(if choices.contains(&p.effort) { p.effort.as_str() } else { "" });
     for (it, r) in &m.rects {
         let idx = m.items.iter().position(|x| x == it).unwrap_or(0);
         if m.starts_others(idx) {
             let o = SelectObject(dc, a.small_font() as _);
             text(dc, "Other accounts", RECT { left: r.left + s(12), top: r.top - s(22), right: r.right, bottom: r.top - s(2) }, a.theme.muted, DT_LEFT);
+            SelectObject(dc, o);
+        }
+        if let Some(maker) = m.heading_at(idx) {
+            let o = SelectObject(dc, a.small_font() as _);
+            text(dc, &maker, RECT { left: r.left + s(12), top: r.top - s(22), right: r.right, bottom: r.top - s(2) }, a.theme.muted, DT_LEFT);
             SelectObject(dc, o);
         }
         if matches!(it, Item::Effort) || (idx > m.top && m.starts_group(idx)) {
@@ -628,7 +659,7 @@ unsafe fn paint(h: HWND, dc: HDC, m: &Menu) {
         let label = |t: &str| text(dc, t, RECT { left: lx + s(32), top: r.top, right: rx - s(90), bottom: r.bottom }, a.theme.text, DT_LEFT | DT_END_ELLIPSIS);
         match *it {
             Item::Model(i) => {
-                let (name, slug, hint, acct) = &m.models[i];
+                let (name, slug, hint, acct, _) = &m.models[i];
                 // Another account's row names that account where the speed hint would be.
                 let acct_name = if m.is_other(i) { account_name(acct) } else { String::new() };
                 let hint: &str = if m.is_other(i) { &acct_name } else { hint };
@@ -655,7 +686,7 @@ unsafe fn paint(h: HWND, dc: HDC, m: &Menu) {
                 label("Effort");
                 let right = keycap(dc, "\u{2192}", rx, r) - s(6);
                 let o = SelectObject(dc, a.small_font() as _);
-                let val = effort_label(effort_now);
+                let val = if choices.len() < 2 { "n/a" } else { effort_label(effort_now) };
                 let vw = s(52);
                 text(dc, val, RECT { left: right - vw, top: r.top, right, bottom: r.bottom }, if typed_effort.is_some() { a.theme.accent } else { a.theme.muted }, DT_CENTER);
                 SelectObject(dc, o);
@@ -745,6 +776,20 @@ unsafe fn paint(h: HWND, dc: HDC, m: &Menu) {
         keycap(dc, cap, x + cw, &fr);
         text(dc, word, RECT { left: x + cw + s(5), top: fr.top, right: rc.right, bottom: fr.bottom }, a.theme.muted, DT_LEFT);
         x += cw + s(5) + tw(dc, word) + s(12);
+    }
+    // Where the view is in a long list, and a thin bar beside it.
+    let n = m.model_count();
+    if n > VISIBLE_MODELS {
+        let first = m.top + 1;
+        let label = format!("{}\u{2013}{} of {}", first, (m.top + VISIBLE_MODELS).min(n), n);
+        text(dc, &label, RECT { left: 0, top: fr.top, right: rc.right - s(14), bottom: fr.bottom }, a.theme.muted, DT_RIGHT);
+        if let (Some(f), Some(l)) = (m.rects.iter().find(|r| matches!(r.0, Item::Model(_))), m.rects.iter().rev().find(|r| matches!(r.0, Item::Model(_)))) {
+            let (t, b) = (f.1.top, l.1.bottom);
+            let (x1, x2) = (rc.right - s(6), rc.right - s(3));
+            round(dc, &RECT { left: x1, top: t, right: x2, bottom: b }, mix(a.theme.bg, a.theme.bubble, 60), None, s(3));
+            let (th, tp) = ((b - t) * VISIBLE_MODELS as i32 / n as i32, (b - t) * m.top as i32 / n as i32);
+            round(dc, &RECT { left: x1, top: t + tp, right: x2, bottom: t + tp + th.max(s(10)) }, a.theme.muted, None, s(3));
+        }
     }
     SelectObject(dc, o);
     SelectObject(dc, old);

@@ -899,7 +899,8 @@ fn send() {
             let mut mem = memory_store::block_for(&mem_dir, mode);
             mem += &memory_store::relevant_for(&mem_dir, mode, &last_user);
             let (f, base) = crate::core::models::route(&data, &p.id, &p.model, f, &p.base_url);
-            let r = build_request(f, &base, &p.model, &secrets::get(&p.id), &req_msgs, &att, &mem);
+            let effort = crate::core::models::effective_effort(&data, &p.id, &p.model, &p.effort);
+            let r = build_request_with(f, &base, &p.model, &secrets::get(&p.id), &req_msgs, &att, &mem, &effort);
             sink(Event::Phase("Waiting for reply".into()));
             http::stream(&r, f, &cancel.http, &sink);
         }
@@ -1138,13 +1139,32 @@ pub fn model_list(p: &Profile) -> Vec<(String, String)> {
         [("Default", ""), ("Opus", "opus"), ("Sonnet", "sonnet"), ("Haiku", "haiku")].iter().map(|m| (m.0.to_string(), m.1.to_string())).collect()
     } else if !p.is_login() {
         // API accounts: the models the provider listed for this key (see core::models), with the current one kept even if unlisted.
-        let hide = crate::core::models::hidden(&app().data, &p.id);
-        let mut v: Vec<(String, String)> = crate::core::models::load(&app().data, &p.id).into_iter().filter(|m| m.id == p.model || !hide.contains(&m.id)).map(|m| (m.id.clone(), m.id)).collect();
-        if !p.model.is_empty() && !v.iter().any(|m| m.1 == p.model) { v.insert(0, (p.model.clone(), p.model.clone())); }
-        v
+        api_models(p).into_iter().map(|m| (m.name, m.id)).collect()
     } else {
         std::iter::once(("Default".to_string(), String::new())).chain(cli::codex_models().into_iter().map(|m| (m.clone(), m))).collect()
     }
+}
+
+/// An API account's models that show in the menus: the ones the provider listed minus the ones the user hid,
+/// and always the one in use (even if hidden or not listed).
+pub fn api_models(p: &Profile) -> Vec<crate::core::models::Found> {
+    use crate::core::models::{self, Found};
+    let hide = models::hidden(&app().data, &p.id);
+    let mut v: Vec<Found> = models::load(&app().data, &p.id).into_iter().filter(|m| m.id == p.model || !hide.contains(&m.id)).collect();
+    if !p.model.is_empty() && !v.iter().any(|m| m.id == p.model) {
+        let f = if p.kind == "anthropic" { ApiFormat::Anthropic } else { ApiFormat::OpenAi };
+        v.insert(0, Found { id: p.model.clone(), name: p.model.clone(), format: f, base: p.base_url.clone(), vendor: models::vendor(&p.model, None), efforts: None });
+    }
+    v
+}
+
+/// The efforts the account can step through in the menu, "Default" (empty) first: Low to High for Claude and ChatGPT,
+/// and for an API account whatever the model in use accepts (none at all for a model that doesn't reason).
+pub fn effort_choices(p: &Profile) -> Vec<String> {
+    let mut v = vec![String::new()];
+    if p.is_login() { v.extend(["low", "medium", "high"].map(String::from)); }
+    else { v.extend(crate::core::models::efforts_for(&app().data, &p.id, &p.model)); }
+    v
 }
 
 /// Asks an API account's provider which models its key can use and saves the answer. Blocks: call it off the window thread.
@@ -1168,13 +1188,12 @@ pub fn refresh_models_if_stale(p: &Profile) {
     if !crate::core::models::stale(&data, &p.id) { return; }
     std::thread::spawn(move || { let _ = find_models(&p, &key, &data); });
 }
-const EFFORTS: [(&str, &str); 4] = [("Default", ""), ("Low", "low"), ("Medium", "medium"), ("High", "high")];
 
 fn cycle_model() {
     let a = app();
     let p = a.cfg.active_profile().clone();
-    if !p.is_login() { return next_profile(); }
     let ms = model_list(&p);
+    if ms.is_empty() || (!p.is_login() && ms.len() < 2) { return next_profile(); }
     let i = ms.iter().position(|m| m.1 == p.model).map_or(0, |i| (i + 1) % ms.len());
     if let Some(x) = a.cfg.profiles.iter_mut().find(|x| x.id == p.id) { x.model = ms[i].1.clone(); }
     changed_profile();
@@ -1183,9 +1202,9 @@ fn cycle_model() {
 fn cycle_effort() {
     let a = app();
     let p = a.cfg.active_profile().clone();
-    if !p.is_login() { return; }
-    let i = EFFORTS.iter().position(|e| e.1 == p.effort).map_or(0, |i| (i + 1) % EFFORTS.len());
-    if let Some(x) = a.cfg.profiles.iter_mut().find(|x| x.id == p.id) { x.effort = EFFORTS[i].1.to_string(); }
+    let all = effort_choices(&p);
+    let i = all.iter().position(|e| *e == p.effort).map_or(0, |i| (i + 1) % all.len());
+    if let Some(x) = a.cfg.profiles.iter_mut().find(|x| x.id == p.id) { x.effort = all[i].clone(); }
     changed_profile();
 }
 

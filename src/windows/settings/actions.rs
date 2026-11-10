@@ -211,6 +211,17 @@ pub(super) fn run(h: HWND, st: &mut St, r: Run) {
             }
         }
         Run::ApiSave => api_save(h, st),
+        Run::VendorFlip(k) => {
+            if let Some(p) = api_profiles().get(st.api_sel) {
+                let found = crate::core::models::load(&app().data, &p.id);
+                let maker = maker_list(&found).get(k as usize).cloned().unwrap_or_default();
+                let ids: Vec<String> = found.into_iter().filter(|m| m.vendor == maker).map(|m| m.id).collect();
+                let mut hide = crate::core::models::hidden(&app().data, &p.id);
+                if ids.iter().all(|i| !hide.contains(i)) { hide.extend(ids.into_iter().filter(|i| *i != p.model)); } else { hide.retain(|h| !ids.contains(h)); }
+                crate::core::models::set_hidden(&app().data, &p.id, &hide);
+            }
+            rebuild(st);
+        }
         Run::ModelsAll | Run::ModelsNone => {
             if let Some(p) = api_profiles().get(st.api_sel) {
                 let all: Vec<String> = if r == Run::ModelsNone { crate::core::models::load(&app().data, &p.id).into_iter().map(|m| m.id).filter(|id| *id != p.model).collect() } else { vec![] };

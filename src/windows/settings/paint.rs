@@ -163,7 +163,7 @@ pub(super) unsafe fn paint(h: HWND, dc: HDC, st: &mut St) {
     let top0 = bar;
     let mut y = top0 + s(6) - st.scroll;
     let mut rects = Vec::with_capacity(st.rows.len());
-    let search_row = matches!(st.page, Page::Home | Page::Keys | Page::ManageMem);
+    let search_row = has_search(st.page);
     if search_row { y += s(44); }
     for r in &st.rows {
         let hgt = row_height(dc, &f, r, width);
@@ -300,7 +300,7 @@ pub(super) unsafe fn paint(h: HWND, dc: HDC, st: &mut St) {
         text(dc, f.icon, "\u{E721}", RECT { left: sr.left + s(14), top: sr.top, right: sr.left + s(36), bottom: sr.bottom }, a.theme.muted, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         let tr = RECT { left: sr.left + s(46), top: sr.top, right: sr.right - s(10), bottom: sr.bottom };
         if st.query.is_empty() {
-            text(dc, f.body, match st.page { Page::Home => "Search settings, e.g. memory", Page::ManageMem => "Search memories", _ => "Search actions and shortcuts" }, tr, a.theme.muted, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+            text(dc, f.body, match st.page { Page::Home => "Search settings, e.g. memory", Page::ManageMem => "Search memories", Page::Models => "Search models or makers", _ => "Search actions and shortcuts" }, tr, a.theme.muted, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
         } else if st.sel_all {
             let tw = text_w(dc, f.body, &st.query).min(tr.right - tr.left);
             round(dc, &RECT { left: tr.left - s(2), top: tr.top + s(5), right: tr.left + tw + s(2), bottom: tr.bottom - s(5) }, mix(a.theme.code, a.theme.accent, 55), None, s(4));
@@ -387,7 +387,7 @@ pub(super) fn wanted_height(h: HWND, st: &St) -> i32 {
         GetClientRect(h, &mut rc);
         let width = rc.right - 2 * s(16);
         let mut total = s(46) + s(6) + s(6) + s(40);
-        if matches!(st.page, Page::Home | Page::Keys | Page::ManageMem) { total += s(44); }
+        if has_search(st.page) { total += s(44); }
         if matches!(st.page, Page::ChatMem | Page::ManageMem) { total += s(60); }
         for r in &st.rows { total += row_height(dc, &f, r, width) + s(6); }
         ReleaseDC(h, dc);
@@ -409,7 +409,7 @@ pub(super) fn refit(h: HWND) {
 }
 
 pub(super) fn row_at(st: &St, x: i32, y: i32) -> Option<usize> {
-    st.rects.iter().position(|r| x >= r.left && x < r.right && y >= r.top && y < r.bottom && y >= s(46) + if matches!(st.page, Page::Home | Page::Keys | Page::ManageMem) { s(44) } else { 0 })
+    st.rects.iter().position(|r| x >= r.left && x < r.right && y >= r.top && y < r.bottom && y >= s(46) + if has_search(st.page) { s(44) } else { 0 })
 }
 
 /// True when the pointer is over something clickable: the back crumb on a sub-page, or a row that can be chosen.

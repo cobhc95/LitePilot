@@ -24,6 +24,8 @@ const WM_MOUSELEAVE_SETTINGS: u32 = 0x02A3;
 const WM_TIDY: u32 = WM_APP + 6;
 /// The provider's model list arrived: lParam is a Box<Result<(account id, model was blank, model ids), String>>.
 const WM_MODELS: u32 = WM_APP + 7;
+/// Pages with a search box above their rows.
+fn has_search(p: Page) -> bool { matches!(p, Page::Home | Page::Keys | Page::ManageMem | Page::Models) }
 const CLASS: &str = "LitePilotSettings";
 
 mod actions;
@@ -55,7 +57,7 @@ enum Pick { Theme, Palette, Font, Size, Spacing, Provider, TrimAfter, CloseAfter
 #[derive(Clone, Copy, PartialEq)]
 enum Field { Hotkey, ApiName, ApiUrl, ApiModel, ApiKey, Custom(usize), MemAdd, Passphrase }
 #[derive(Clone, Copy, PartialEq)]
-enum Run { ModelsAll, ModelsNone, UpdateCheck, SignIn, SignOut, ApiSave, ApiRemove, KeysReset, MemClear, MemTidy, EngineClear, MemPaste, MemPrompt, DataOpen, DataCopy, DataWipe(u8), Export, Import, QuickExport, TidyNow, TidyApply, TidyDiscard, TidyUndo }
+enum Run { ModelsAll, ModelsNone, VendorFlip(u8), UpdateCheck, SignIn, SignOut, ApiSave, ApiRemove, KeysReset, MemClear, MemTidy, EngineClear, MemPaste, MemPrompt, DataOpen, DataCopy, DataWipe(u8), Export, Import, QuickExport, TidyNow, TidyApply, TidyDiscard, TidyUndo }
 
 #[derive(Clone, Copy, PartialEq)]
 enum Kind { Nav(Page), Jump(Page, usize), Toggle(Tog), Pick(Pick), Field(Field), Run(Run), Key(usize), MemItem(usize), ModelShow(usize), Info, Hint, Preview }

@@ -43,6 +43,12 @@ fn chat_msgs(f: ApiFormat, msgs: &[Msg], att: &std::path::Path) -> Vec<Value> {
 
 /// `system` is standing instructions (the user's Local memory); empty sends none, as before.
 pub fn build_request(f: ApiFormat, base: &str, model: &str, key: &str, msgs: &[Msg], att: &std::path::Path, system: &str) -> HttpRequest {
+    build_request_with(f, base, model, key, msgs, att, system, "")
+}
+
+/// Like `build_request`, plus a reasoning effort ("low", "high", "max"...; empty sends none) in the way each format asks for it.
+#[allow(clippy::too_many_arguments)]
+pub fn build_request_with(f: ApiFormat, base: &str, model: &str, key: &str, msgs: &[Msg], att: &std::path::Path, system: &str, effort: &str) -> HttpRequest {
     let system = system.trim();
     let base = base.trim().trim_end_matches('/');
     let mut headers = vec![("Content-Type".to_string(), "application/json".to_string())];
@@ -53,11 +59,9 @@ pub fn build_request(f: ApiFormat, base: &str, model: &str, key: &str, msgs: &[M
             }
             let mut messages = chat_msgs(f, msgs, att);
             if !system.is_empty() { messages.insert(0, json!({"role": "system", "content": system})); }
-            HttpRequest {
-                url: format!("{base}/chat/completions"),
-                headers,
-                body: json!({"model": model, "stream": true, "stream_options": {"include_usage": true}, "messages": messages}).to_string(),
-            }
+            let mut body = json!({"model": model, "stream": true, "stream_options": {"include_usage": true}, "messages": messages});
+            if !effort.is_empty() { body["reasoning_effort"] = effort.into(); }
+            HttpRequest { url: format!("{base}/chat/completions"), headers, body: body.to_string() }
         }
         ApiFormat::Responses => {
             if !key.is_empty() {
@@ -65,6 +69,7 @@ pub fn build_request(f: ApiFormat, base: &str, model: &str, key: &str, msgs: &[M
             }
             let mut body = json!({"model": model, "stream": true, "store": false, "input": chat_msgs(f, msgs, att)});
             if !system.is_empty() { body["instructions"] = system.into(); }
+            if !effort.is_empty() { body["reasoning"] = json!({"effort": effort}); }
             HttpRequest { url: format!("{base}/responses"), headers, body: body.to_string() }
         }
         ApiFormat::Anthropic => {
@@ -72,6 +77,7 @@ pub fn build_request(f: ApiFormat, base: &str, model: &str, key: &str, msgs: &[M
             headers.push(("anthropic-version".into(), "2023-06-01".into()));
             let mut body = json!({"model": model, "stream": true, "max_tokens": 8192, "messages": chat_msgs(f, msgs, att)});
             if !system.is_empty() { body["system"] = system.into(); }
+            if !effort.is_empty() { body["output_config"] = json!({"effort": effort}); }
             HttpRequest { url: format!("{base}/messages"), headers, body: body.to_string() }
         }
     }
@@ -239,6 +245,16 @@ pub fn flatten_prompt(msgs: &[Msg]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn effort_is_sent_in_each_formats_own_field() {
+        let m = [Msg::new("user", "hi")];
+        let body = |f| serde_json::from_str::<Value>(&build_request_with(f, "u", "m", "", &m, std::path::Path::new("."), "", "high").body).unwrap();
+        assert_eq!(body(ApiFormat::OpenAi)["reasoning_effort"], "high");
+        assert_eq!(body(ApiFormat::Responses)["reasoning"]["effort"], "high");
+        assert_eq!(body(ApiFormat::Anthropic)["output_config"]["effort"], "high");
+        let none: Value = serde_json::from_str(&build_request(ApiFormat::OpenAi, "u", "m", "", &m, std::path::Path::new("."), "").body).unwrap();
+        assert!(none.get("reasoning_effort").is_none());
+    }
     #[test]
     fn responses_format_builds_and_streams() {
         let m = [Msg::new("user", "hi")];

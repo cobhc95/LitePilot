@@ -87,7 +87,7 @@ pub(super) fn key_down(h: HWND, vk: u16) {
         if alt && vk == VK_LEFT { return go_back(h, st); }
         if ctrl && vk == 0x53 && st.page == Page::Api { return api_save(h, st); }
         // Windows text shortcuts in the search box: select all, copy, cut, paste, delete a word.
-        if ctrl && matches!(st.page, Page::Home | Page::Keys | Page::ManageMem) {
+        if ctrl && has_search(st.page) {
             match vk {
                 0x41 => { st.sel_all = !st.query.is_empty(); return; }
                 0x43 | 0x58 => {
@@ -179,7 +179,7 @@ pub(super) fn char_in(h: HWND, c: char) {
         if st.capture.is_some() || PICK.get().is_some() { return; }
         if let Some((_, t)) = st.edit.as_mut() { if t.chars().count() < 200 { t.push(c); } return; }
         // Typing searches: every setting on the home page, the shortcut list on its own page.
-        if matches!(st.page, Page::Home | Page::Keys | Page::ManageMem) && (st.sel_all || st.query.chars().count() < 40) {
+        if has_search(st.page) && (st.sel_all || st.query.chars().count() < 40) {
             if st.sel_all { st.query.clear(); st.sel_all = false; }
             st.query.push(c);
             st.rows = build_rows(st);
