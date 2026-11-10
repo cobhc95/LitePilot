@@ -67,6 +67,44 @@ pub fn fetch(url: &str, max: usize) -> Option<Vec<u8>> {
     }
 }
 
+/// GET with headers (for a provider's model list). The reply text, or a short reason it failed.
+pub fn get_text(url: &str, headers: &[(String, String)]) -> Result<String, String> {
+    let u = parse_url(url).ok_or_else(|| format!("Invalid base URL: {url}"))?;
+    unsafe {
+        let agent = w(&format!("LitePilot/{}", crate::core::VERSION));
+        let s = WinHttpOpen(agent.as_ptr(), WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, std::ptr::null(), std::ptr::null(), 0);
+        if s.is_null() { return Err("Network setup failed.".into()); }
+        WinHttpSetTimeouts(s, 0, 10_000, 15_000, 30_000);
+        let c = WinHttpConnect(s, w(&u.host).as_ptr(), u.port, 0);
+        let r = if c.is_null() { std::ptr::null_mut() } else {
+            WinHttpOpenRequest(c, w("GET").as_ptr(), w(&u.path).as_ptr(), std::ptr::null(), std::ptr::null(), std::ptr::null(), if u.secure { WINHTTP_FLAG_SECURE } else { 0 })
+        };
+        let hs: String = headers.iter().map(|(k, v)| format!("{k}: {v}
+")).collect();
+        let hw = w(&hs);
+        let mut out = Vec::new();
+        let mut status = 0u32;
+        let ok = !r.is_null()
+            && WinHttpSendRequest(r, hw.as_ptr(), (hw.len() - 1) as u32, std::ptr::null(), 0, 0, 0) != 0
+            && WinHttpReceiveResponse(r, std::ptr::null_mut()) != 0;
+        if ok {
+            let mut sz = 4u32;
+            WinHttpQueryHeaders(r, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, std::ptr::null(), &mut status as *mut _ as _, &mut sz, std::ptr::null_mut());
+            let mut buf = vec![0u8; 16384];
+            while out.len() < 4_000_000 {
+                let mut n = 0u32;
+                if WinHttpReadData(r, buf.as_mut_ptr() as _, buf.len() as u32, &mut n) == 0 || n == 0 { break; }
+                out.extend_from_slice(&buf[..n as usize]);
+            }
+        }
+        for h in [r, c, s] { if !h.is_null() { WinHttpCloseHandle(h); } }
+        if !ok { return Err("Couldn't reach the provider. Check the base URL and your connection.".into()); }
+        let text = String::from_utf8_lossy(&out).into_owned();
+        if status >= 300 { return Err(http_error(status, &text)); }
+        Ok(text)
+    }
+}
+
 pub fn stream(req: &HttpRequest, f: ApiFormat, cancel: &HttpCancel, sink: &dyn Fn(Event)) {
     let Some(u) = parse_url(&req.url) else {
         return sink(Event::Error(format!("Invalid base URL: {}", req.url)));

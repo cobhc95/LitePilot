@@ -898,7 +898,8 @@ fn send() {
             // API accounts: standing facts while the list is small, otherwise only the related ones.
             let mut mem = memory_store::block_for(&mem_dir, mode);
             mem += &memory_store::relevant_for(&mem_dir, mode, &last_user);
-            let r = build_request(f, &p.base_url, &p.model, &secrets::get(&p.id), &req_msgs, &att, &mem);
+            let (f, base) = crate::core::models::route(&data, &p.id, &p.model, f, &p.base_url);
+            let r = build_request(f, &base, &p.model, &secrets::get(&p.id), &req_msgs, &att, &mem);
             sink(Event::Phase("Waiting for reply".into()));
             http::stream(&r, f, &cancel.http, &sink);
         }
@@ -1135,9 +1136,36 @@ pub fn changed_profile() {
 pub fn model_list(p: &Profile) -> Vec<(String, String)> {
     if p.kind == "claude" {
         [("Default", ""), ("Opus", "opus"), ("Sonnet", "sonnet"), ("Haiku", "haiku")].iter().map(|m| (m.0.to_string(), m.1.to_string())).collect()
+    } else if !p.is_login() {
+        // API accounts: the models the provider listed for this key (see core::models), with the current one kept even if unlisted.
+        let mut v: Vec<(String, String)> = crate::core::models::load(&app().data, &p.id).into_iter().map(|m| (m.id.clone(), m.id)).collect();
+        if !p.model.is_empty() && !v.iter().any(|m| m.1 == p.model) { v.insert(0, (p.model.clone(), p.model.clone())); }
+        v
     } else {
         std::iter::once(("Default".to_string(), String::new())).chain(cli::codex_models().into_iter().map(|m| (m.clone(), m))).collect()
     }
+}
+
+/// Asks an API account's provider which models its key can use and saves the answer. Blocks: call it off the window thread.
+pub fn find_models(p: &Profile, key: &str, data: &std::path::Path) -> Result<Vec<crate::core::models::Found>, String> {
+    use crate::core::models;
+    let f = if p.kind == "anthropic" { ApiFormat::Anthropic } else { ApiFormat::OpenAi };
+    let mut headers = vec![];
+    if f == ApiFormat::Anthropic { headers.push(("x-api-key".to_string(), key.to_string())); headers.push(("anthropic-version".to_string(), "2023-06-01".to_string())); }
+    else if !key.is_empty() { headers.push(("Authorization".to_string(), format!("Bearer {key}"))); }
+    let body = http::get_text(&models::list_url(&p.base_url), &headers)?;
+    let list = models::parse(&body, f, &p.base_url);
+    if list.is_empty() { return Err("The provider answered, but listed no models this app can use.".into()); }
+    models::save(data, &p.id, &list);
+    Ok(list)
+}
+
+/// Quietly refreshes an API account's saved model list if it is old or missing (the model menu calls this when it opens).
+pub fn refresh_models_if_stale(p: &Profile) {
+    if p.is_login() || p.base_url.is_empty() { return; }
+    let (p, data, key) = (p.clone(), app().data.clone(), secrets::get(&p.id));
+    if !crate::core::models::stale(&data, &p.id) { return; }
+    std::thread::spawn(move || { let _ = find_models(&p, &key, &data); });
 }
 const EFFORTS: [(&str, &str); 4] = [("Default", ""), ("Low", "low"), ("Medium", "medium"), ("High", "high")];
 

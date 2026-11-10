@@ -39,7 +39,8 @@ fn oneshot(c: &Ctx, user: &str) -> Result<String, String> {
     let p = &c.profile;
     if !p.is_login() {
         let f = if p.kind == "anthropic" { ApiFormat::Anthropic } else { ApiFormat::OpenAi };
-        let r = build_request(f, &p.base_url, &c.model, &c.key, &[Msg::new("user", user)], &c.data, tidy::SYSTEM);
+        let (f, base) = crate::core::models::route(&c.data, &p.id, &c.model, f, &p.base_url);
+        let r = build_request(f, &base, &c.model, &c.key, &[Msg::new("user", user)], &c.data, tidy::SYSTEM);
         let (text, err) = (std::cell::RefCell::new(String::new()), std::cell::RefCell::new(String::new()));
         http::stream(&r, f, &http::HttpCancel::default(), &|e| match e { Event::Text(t) => text.borrow_mut().push_str(&t), Event::Error(m) => *err.borrow_mut() = m, _ => {} });
         let (t, e) = (text.into_inner(), err.into_inner());

@@ -14,7 +14,7 @@ pub(super) fn api_load(st: &mut St) {
     }
 }
 
-pub(super) fn api_save(st: &mut St) {
+pub(super) fn api_save(h: HWND, st: &mut St) {
     let a = app();
     let saved = api_profiles();
     let id = match saved.get(st.api_sel) {
@@ -37,7 +37,16 @@ pub(super) fn api_save(st: &mut St) {
     app::update_header();
     st.api_sel = api_profiles().iter().position(|p| p.id == id).unwrap_or(0);
     api_load(st);
-    st.status = if failed { "Couldn't save your key to Credential Manager.".into() } else { "Saved.".into() };
+    st.status = if failed { "Couldn't save your key to Credential Manager.".into() } else { "Saved. Finding your models...".into() };
+    // Ask the provider which models this key can use, in the background; WM_MODELS reports back.
+    if let Some(p) = a.cfg.profiles.iter().find(|p| p.id == id).cloned() {
+        let (hv, data) = (h as usize, a.data.clone());
+        let key = if st.api[3].trim().is_empty() { secrets::get(&id) } else { st.api[3].trim().to_string() };
+        std::thread::spawn(move || {
+            let r = app::find_models(&p, &key, &data).map(|l| (p.id.clone(), p.model.is_empty(), l.into_iter().map(|m| m.id).collect::<Vec<_>>()));
+            unsafe { PostMessageW(hv as HWND, WM_MODELS, 0, Box::into_raw(Box::new(r)) as isize); }
+        });
+    }
     rebuild(st);
 }
 
@@ -46,6 +55,7 @@ pub(super) fn api_remove(st: &mut St) {
     let Some(p) = api_profiles().get(st.api_sel).cloned() else { return };
     a.cfg.profiles.retain(|x| x.id != p.id);
     secrets::delete(&p.id);
+    crate::core::models::forget(&app().data, &p.id);
     if a.cfg.active == p.id { a.cfg.active = a.cfg.profiles[0].id.clone(); }
     app::save_config();
     app::update_header();
@@ -200,7 +210,7 @@ pub(super) fn run(h: HWND, st: &mut St, r: Run) {
                 rebuild(st);
             }
         }
-        Run::ApiSave => api_save(st),
+        Run::ApiSave => api_save(h, st),
         Run::ApiRemove => api_remove(st),
         Run::MemClear => {
             if !st.clear_armed { st.clear_armed = true; st.status = "Press Enter again to clear every memory.".into(); }

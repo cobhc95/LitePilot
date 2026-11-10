@@ -85,7 +85,7 @@ pub(super) fn key_down(h: HWND, vk: u16) {
             return;
         }
         if alt && vk == VK_LEFT { return go_back(h, st); }
-        if ctrl && vk == 0x53 && st.page == Page::Api { return api_save(st); }
+        if ctrl && vk == 0x53 && st.page == Page::Api { return api_save(h, st); }
         // Windows text shortcuts in the search box: select all, copy, cut, paste, delete a word.
         if ctrl && matches!(st.page, Page::Home | Page::Keys | Page::ManageMem) {
             match vk {

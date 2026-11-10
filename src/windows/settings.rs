@@ -22,6 +22,8 @@ const WM_BACKUP: u32 = WM_APP + 5;
 const WM_MOUSELEAVE_SETTINGS: u32 = 0x02A3;
 /// The AI finished proposing tidy merges: lParam is a Box<Result<Vec<Merge>, String>>.
 const WM_TIDY: u32 = WM_APP + 6;
+/// The provider's model list arrived: lParam is a Box<Result<(account id, model was blank, model ids), String>>.
+const WM_MODELS: u32 = WM_APP + 7;
 const CLASS: &str = "LitePilotSettings";
 
 mod actions;
@@ -338,6 +340,23 @@ unsafe extern "system" fn proc_(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LR
                 rebuild(st);
             });
             refit(h);
+            InvalidateRect(h, std::ptr::null(), 0);
+            0
+        }
+        WM_MODELS => {
+            let r = *Box::from_raw(lp as *mut Result<(String, bool, Vec<String>), String>);
+            with(|st| {
+                st.status = match r {
+                    Ok((id, blank, ids)) => {
+                        // A new account with no model picked starts on the first one the provider listed.
+                        if blank { if let Some(p) = a.cfg.profiles.iter_mut().find(|p| p.id == id && p.model.is_empty()) { p.model = ids[0].clone(); app::save_config(); app::update_header(); } }
+                        api_load(st);
+                        format!("Saved. Found {} models. Pick one from the model menu.", ids.len())
+                    }
+                    Err(e) => format!("Saved, but couldn't list models: {e}"),
+                };
+                rebuild(st);
+            });
             InvalidateRect(h, std::ptr::null(), 0);
             0
         }

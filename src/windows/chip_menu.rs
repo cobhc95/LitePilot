@@ -164,7 +164,9 @@ fn load_models() -> Vec<(String, String, &'static str, String)> {
     let a = app();
     let active = a.cfg.active.clone();
     let mut v: Vec<(String, String, &'static str, String)> = vec![];
-    for p in a.cfg.profiles.iter().filter(|p| p.is_login()) {
+    // API accounts list what their key can use (found when the key was saved), but only the active one is shown.
+    for p in a.cfg.profiles.iter().filter(|p| p.is_login() || p.id == active) {
+        if !p.is_login() { app::refresh_models_if_stale(p); }
         // Another account's Default means nothing out of context, so only real models are offered from it.
         let other = p.id != active;
         v.extend(app::model_list(p).into_iter().filter(|(_, slug)| !(other && slug.is_empty())).map(|(name, slug)| {
