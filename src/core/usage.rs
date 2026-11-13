@@ -84,6 +84,35 @@ pub fn from_codex(rl: &Value) -> Option<Usage> {
     (u.five_hour.is_some() || u.week.is_some()).then_some(u)
 }
 
+/// "2026-11-20T12:28:59Z" as Unix seconds.
+fn iso_utc(s: &str) -> Option<i64> {
+    let n = |r: std::ops::Range<usize>| s.get(r)?.parse::<i64>().ok();
+    let (y, m, d, hh, mm, ss) = (n(0..4)?, n(5..7)?, n(8..10)?, n(11..13)?, n(14..16)?, n(17..19)?);
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    Some((era * 146_097 + doe - 719_468) * 86_400 + hh * 3600 + mm * 60 + ss)
+}
+
+/// What `agy -p /usage` prints: tab-separated `group, limit, NN% remaining, reset time` lines. The two model
+/// groups ("Gemini Models", "Claude and GPT models") each have a 5-hour and a weekly limit; the per-model
+/// weekly lines are left out. Returned as (store key, usage): "gemini" and "gemini-3p".
+pub fn from_agy(text: &str) -> Vec<(&'static str, Usage)> {
+    let mut out: Vec<(&'static str, Usage)> = Vec::new();
+    for l in text.lines() {
+        let f: Vec<&str> = l.split('\t').map(str::trim).collect();
+        if f.len() < 4 || !f[1].contains("Remaining") { continue; }
+        let key = if f[0].starts_with("Gemini Models") { "gemini" } else if f[0].starts_with("Claude and GPT") { "gemini-3p" } else { continue };
+        let Some(left) = f[2].trim_end_matches('%').parse::<f64>().ok() else { continue };
+        let win = Window { used: 100.0 - left, resets: iso_utc(f[3]).unwrap_or(0) };
+        let i = match out.iter().position(|(k, _)| *k == key) { Some(i) => i, None => { out.push((key, Usage { at: now(), ..Default::default() })); out.len() - 1 } };
+        if f[1].contains("Five Hour") { out[i].1.five_hour = Some(win); } else if f[1].contains("Weekly") { out[i].1.week = Some(win); }
+    }
+    out
+}
+
 /// Looks at one output line from either CLI and records any usage in it.
 pub fn observe(line: &str) {
     if !line.contains("rate_limit_event") && !line.contains("rateLimits") { return; }
@@ -107,6 +136,18 @@ mod tests {
         assert_eq!(u.five_hour.unwrap().used, 1.0);
         assert_eq!(u.week.unwrap().used, 61.0);
         assert!(from_claude(&serde_json::json!({"type":"result"})).is_none());
+    }
+
+    #[test]
+    fn reads_agy_usage() {
+        let t = "Gemini Models\tWeekly Limit Remaining\t96%\t2026-11-20T12:28:59Z\nGemini Models\tFive Hour Limit Remaining\t100%\t2026-11-14T00:43:59Z\nClaude and GPT models\tWeekly Limit Remaining\t100%\t2026-11-20T19:48:31Z\nGemini 4 Argon\tGemini 4 Argon Weekly Limit\t99%\t2026-11-17T22:31:26Z\n";
+        let r = from_agy(t);
+        assert_eq!(r.len(), 2);
+        let g = r.iter().find(|(k, _)| *k == "gemini").unwrap().1;
+        assert_eq!(g.week.unwrap().used, 4.0);
+        assert_eq!(g.five_hour.unwrap().used, 0.0);
+        assert_eq!(g.week.unwrap().resets, 1_795_177_739);
+        assert_eq!(iso_utc("1970-01-02T00:00:01Z"), Some(86_401));
     }
 
     #[test]

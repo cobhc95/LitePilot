@@ -253,6 +253,24 @@ pub fn refresh_codex_usage() {
     std::thread::spawn(|| { fetch_codex_usage(); BUSY.store(false, Ordering::SeqCst); });
 }
 
+/// Gemini's plan usage, the same way: `agy -p /usage` prints the 5-hour and weekly limits left per model group.
+/// Runs in the background (a few seconds), at most one at a time; the model menu picks the answer up.
+pub fn refresh_agy_usage() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static BUSY: AtomicBool = AtomicBool::new(false);
+    if !is_signed_in("gemini") || BUSY.swap(true, Ordering::SeqCst) { return; }
+    std::thread::spawn(|| {
+        if let Some(mut c) = command("gemini") {
+            c.args(["-p", "/usage", "--print-timeout", "30s"]).current_dir(std::env::temp_dir())
+                .stdin(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+            if let Ok(o) = c.output() {
+                for (k, u) in crate::core::usage::from_agy(&String::from_utf8_lossy(&o.stdout)) { crate::core::usage::set(k, u); }
+            }
+        }
+        BUSY.store(false, Ordering::SeqCst);
+    });
+}
+
 fn fetch_codex_usage() -> Option<()> {
     use std::io::{BufRead, BufReader, Write};
     use std::process::Stdio;

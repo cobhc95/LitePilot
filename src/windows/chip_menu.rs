@@ -44,13 +44,20 @@ struct Menu {
 fn usage_kind() -> Option<&'static str> {
     let p = app().cfg.active_profile();
     if !p.is_login() { return None; }
-    match p.kind.as_str() { "claude" => Some("claude"), "codex" => Some("codex"), _ => None }
+    match p.kind.as_str() {
+        "claude" => Some("claude"),
+        "codex" => Some("codex"),
+        // Gemini counts Claude and GPT models against their own limits.
+        "gemini" => Some(if p.model.starts_with("claude-") || p.model.starts_with("gpt-") { "gemini-3p" } else { "gemini" }),
+        _ => None,
+    }
 }
 
-/// Codex can be asked any time; ask when the reading is missing or over a minute old.
+/// Codex and Gemini can be asked any time; ask when the reading is missing or over a minute old.
 fn want_usage() {
-    if usage_kind() == Some("codex") && crate::core::usage::get("codex").is_none_or(|u| crate::core::usage::now() - u.at > 60) {
-        super::cli::refresh_codex_usage();
+    let Some(kind) = usage_kind() else { return };
+    if kind != "claude" && crate::core::usage::get(kind).is_none_or(|u| crate::core::usage::now() - u.at > 60) {
+        if kind == "codex" { super::cli::refresh_codex_usage(); } else { super::cli::refresh_agy_usage(); }
     }
 }
 
