@@ -289,6 +289,7 @@ pub(super) fn rows_for(page: Page, st: &St, query: &str) -> Vec<Row> {
             v.push(row(g("\u{E8F1}"), "Import and export", "Clipboard, AI prompt, Downloads", Kind::Nav(Page::ImpExp)));
             v.push(row(g("\u{E9F5}"), "Tidy with AI", if c.tidy_on { "On. Merge repeats after you review them" } else { "Off" }, Kind::Nav(Page::Tidy)));
             v.push(row(g("\u{E9E9}"), "Limits and sharing", &format!("Up to {} facts, {}", c.memory_limit, if c.share_memory { "shared by every account" } else { "a list per account" }), Kind::Nav(Page::Limits)));
+            v.push(hint("In the chat you can also type: remember that ..., forget about ..., remove ... from memories, delete all memories, manage memories, or tidy memories. A change can be undone from the chat."));
             v
         }
         Page::ImpExp => vec![

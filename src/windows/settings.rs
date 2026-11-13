@@ -530,6 +530,16 @@ pub fn open_chat_memory() {
     unsafe { InvalidateRect(h, std::ptr::null(), 0); }
 }
 
+/// Opens Settings on the list of memories (or on Tidy memories), for "manage memories" / "tidy memories" in the chat.
+pub fn open_memory_page(tidy: bool) {
+    open();
+    let h = app().settings;
+    if h.is_null() { return; }
+    with(|st| goto(st, if tidy { Page::Tidy } else { Page::ManageMem }, 0));
+    refit(h);
+    unsafe { InvalidateRect(h, std::ptr::null(), 0); }
+}
+
 /// A standard Save or Open dialog for backup files. None when cancelled.
 fn backup_dialog(h: HWND, save: bool) -> Option<std::path::PathBuf> {
     use windows_sys::Win32::UI::Controls::Dialogs::*;

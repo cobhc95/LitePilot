@@ -938,12 +938,15 @@ fn finish(a: &mut App) {
     update_header();
     unsafe { InvalidateRect(a.view, std::ptr::null(), 0); }
     if a.dirty { render_tail(); }
-    let saved = save_memory_lines(a);
+    let (saved, forgot) = save_memory_lines(a);
     if let Some(m) = a.msgs.last() {
         if m.role == "assistant" && !m.text.is_empty() { let _ = history::append(&a.chat, m); }
     }
     // Last: a note is a message too, and it must not land after the reply before the reply is saved.
-    if !saved.is_empty() { note(format!("Remembered: {}", saved.join("; "))); }
+    let mut done: Vec<String> = vec![];
+    if !saved.is_empty() { done.push(format!("Remembered: {}", saved.join("; "))); }
+    if !forgot.is_empty() { done.push(format!("Forgot: {}", forgot.join("; "))); }
+    if !forgot.is_empty() { memory_changed(done.join(". ")); } else if !done.is_empty() { note(done.join(". ")); }
     // A stopped or failed reply ends the engine; have the next one ready before the next message.
     warm_engine(false);
     if !a.visible {
@@ -953,20 +956,31 @@ fn finish(a: &mut App) {
 }
 
 /// ChatGPT's save lines: the facts go into LitePilot's memory and the lines come out of the reply.
-/// Returns the facts that were saved, for a note.
-fn save_memory_lines(a: &mut App) -> Vec<String> {
+/// Also the delete lines (`[[forget: words]]`), which count only when the user's own message asked to forget or
+/// delete something, so text from the web can't wipe memories. Returns the facts saved and the facts forgotten, for a note.
+fn save_memory_lines(a: &mut App) -> (Vec<String>, Vec<String>) {
     let p = a.cfg.active_profile().clone();
-    if !p.is_login() || memory::effective(&p.memory, true) == "off" { return vec![]; }
-    let Some(m) = a.msgs.last_mut() else { return vec![] };
-    if m.role != "assistant" { return vec![]; }
+    if !p.is_login() || memory::effective(&p.memory, true) == "off" { return (vec![], vec![]); }
+    let asked = a.msgs.iter().rev().find(|m| m.role == "user").is_some_and(|m| {
+        let l = m.text.to_lowercase();
+        ["forget", "remove", "delete", "erase", "clear", "wipe", "drop", "get rid"].iter().any(|w| l.contains(w))
+    });
+    let Some(m) = a.msgs.last_mut() else { return (vec![], vec![]) };
+    if m.role != "assistant" { return (vec![], vec![]); }
     let (kept, facts) = memory::split_remember(&m.text);
-    if facts.is_empty() { return vec![]; }
+    let (kept, drops) = memory::split_forget(&kept);
+    if facts.is_empty() && drops.is_empty() { return (vec![], vec![]); }
     m.text = kept;
     let mut list = memory_store::load(&mem_dir());
+    let before = list.clone();
     let saved: Vec<String> = facts.iter().filter_map(|f| memory::add(&mut list, f).ok()).collect();
-    if !saved.is_empty() && !memory_store::save(&mem_dir(), &list) { note("Couldn't save the memory file.".into()); return vec![]; }
+    // A query under three characters would match nearly everything, so it is ignored.
+    let mut forgot: Vec<String> = vec![];
+    if asked { for q in drops.iter().filter(|q| q.chars().count() >= 3) { forgot.extend(memory::forget(&mut list, q)); } }
+    if (!saved.is_empty() || !forgot.is_empty()) && !memory_store::save(&mem_dir(), &list) { note("Couldn't save the memory file.".into()); return (vec![], vec![]); }
+    if !forgot.is_empty() { a.mem_undo = Some(before); }
     render_keep();
-    saved
+    (saved, forgot)
 }
 
 /// ChatGPT accounts can't all use every model, and Codex's own default may be one this account can't.
@@ -1081,9 +1095,16 @@ pub fn key_of(id: &str) -> String {
 /// Runs a typed "remember that ..." or "forget ..." against the Local memory and says what happened.
 fn memory_command(cmd: memory::Cmd) {
     let a = app();
+    // Opening the lists in Settings changes nothing here.
+    match cmd {
+        memory::Cmd::Manage => return super::settings::open_memory_page(false),
+        memory::Cmd::Tidy => return super::settings::open_memory_page(true),
+        _ => {}
+    }
     let mut list = memory_store::load(&mem_dir());
     let before = list.clone();
     let done = match cmd {
+        memory::Cmd::Manage | memory::Cmd::Tidy => return,
         memory::Cmd::Remember(f) => match memory::add(&mut list, &f) { Ok(f) => format!("Remembered: {f}"), Err(e) => return note(e) },
         memory::Cmd::Forget(q) => {
             let gone = memory::forget(&mut list, &q);

@@ -29,14 +29,67 @@ pub fn effective(mode: &str, is_login: bool) -> &'static str {
 }
 
 #[derive(Debug, PartialEq)]
-pub enum Cmd { Remember(String), Forget(String) }
+pub enum Cmd { Remember(String), Forget(String), /// Open the list of memories in Settings.
+    Manage, /// Open Tidy memories in Settings.
+    Tidy }
 
-/// "remember that X", "remember: X", "forget that X", "forget: X", "forget everything". Only at the start of
-/// the message and never a question, so "remember that film we watched?" still goes to the model.
+/// The message without a trailing "please" / "thanks" and end punctuation, and without a leading "please".
+fn strip_polite(t: &str) -> String {
+    let mut s = t.trim().trim_end_matches(['.', '!']).trim().to_string();
+    for suf in [" please", " pls", " thanks", " thank you"] {
+        if s.to_lowercase().ends_with(suf) && s.len() >= suf.len() && s.is_char_boundary(s.len() - suf.len()) {
+            s.truncate(s.len() - suf.len());
+            s = s.trim_end().trim_end_matches(',').trim_end().to_string();
+        }
+    }
+    let l = s.to_lowercase();
+    if let Some(p) = ["please ", "pls "].iter().find(|p| l.starts_with(*p)) { s = s[p.len()..].to_string(); }
+    s
+}
+
+/// What to forget, from the words after "remove" / "delete" ...: drops quotes and filler like "everything about".
+/// "all" or "everything" alone means the whole list (an empty query).
+fn forget_query(q: &str) -> Option<String> {
+    let mut q = q.trim().trim_matches(['"', '\'', '\u{201C}', '\u{201D}', '\u{2018}', '\u{2019}']).trim().to_string();
+    loop {
+        let l = q.to_lowercase();
+        let Some(p) = ["everything about ", "anything about ", "all memories about ", "all the memories about ", "memories about ", "memory about ", "entries about ", "all about ", "the ", "all ", "any "].iter().find(|p| l.starts_with(*p)) else { break };
+        q = q[p.len()..].trim().to_string();
+    }
+    let l = q.to_lowercase();
+    if matches!(l.as_str(), "all" | "everything") { return Some(String::new()); }
+    (q.chars().count() >= 3).then_some(q)
+}
+
+/// "remember that X", "remember: X", "forget that X", "forget about X", "forget: X", "remove X from memories",
+/// "delete all memories", "manage memories", "tidy memories". Only a whole message and never a question, so
+/// "remember that film we watched?" still goes to the model.
 pub fn parse_command(text: &str) -> Option<Cmd> {
     let t = text.trim();
     if t.contains('\n') || t.ends_with('?') { return None; }
     let lower = t.to_lowercase();
+    // Opening the lists, and wiping everything, in the ways people ask for them.
+    let s = strip_polite(t);
+    let sl = s.to_lowercase();
+    if matches!(sl.as_str(), "manage memories" | "manage memory" | "manage my memories" | "show memories" | "show my memories" | "show memory" | "open memories" | "open memory"
+        | "open my memories" | "open memory settings" | "view memories" | "view my memories" | "edit memories" | "edit my memories" | "list memories" | "list my memories") { return Some(Cmd::Manage); }
+    if matches!(sl.as_str(), "tidy memories" | "tidy my memories" | "tidy memory" | "tidy up memories" | "tidy up my memories" | "organise memories" | "organise my memories" | "organize memories"
+        | "organize my memories" | "organise memory" | "organize memory" | "clean up memories" | "clean up my memories" | "sort memories" | "sort my memories" | "merge memories") { return Some(Cmd::Tidy); }
+    if matches!(sl.as_str(), "clear memory" | "clear memories" | "clear my memories" | "clear all memories" | "delete all memories" | "delete all my memories" | "delete my memories" | "delete memories"
+        | "erase all memories" | "erase my memories" | "wipe memory" | "wipe my memory" | "wipe memories" | "wipe my memories" | "remove all memories" | "remove all my memories") { return Some(Cmd::Forget(String::new())); }
+    // "remove X from memories", "delete X from my memory", "erase X from saved memories".
+    for verb in ["remove ", "delete ", "erase ", "drop ", "clear ", "wipe "] {
+        if !sl.starts_with(verb) { continue; }
+        let body = s[verb.len()..].trim();
+        let bl = body.to_lowercase();
+        for tail in [" from my saved memories", " from my saved memory", " from saved memories", " from saved memory", " from my memories", " from my memory", " from your memories", " from your memory",
+            " from the memories", " from the memory", " from memories", " from memory", " from my notes"] {
+            if bl.ends_with(tail) && body.is_char_boundary(body.len() - tail.len()) {
+                return forget_query(&body[..body.len() - tail.len()]).map(Cmd::Forget);
+            }
+        }
+    }
+    if let Some(q) = ["forget about "].iter().find(|p| sl.starts_with(*p)).and_then(|p| forget_query(&s[p.len()..])) { return Some(Cmd::Forget(q)); }
     let rest = |prefixes: &[&str]| prefixes.iter().find(|p| lower.starts_with(*p)).map(|p| t[p.len()..].trim().trim_end_matches('.').trim().to_string());
     if let Some(r) = rest(&["remember that ", "remember:", "please remember that ", "please remember:"]) {
         return (!r.is_empty()).then_some(Cmd::Remember(r));
@@ -425,7 +478,14 @@ pub fn from_json(s: &str) -> Vec<String> {
 /// The save tags a reply can carry, `[[remember: fact]]`, usually on their own lines at the end but sometimes at the
 /// end of a sentence. Returns the reply without them and the facts they ask for. Tags inside code (a line starting
 /// with spaces or a backtick block) are left alone.
-pub fn split_remember(text: &str) -> (String, Vec<String>) {
+pub fn split_remember(text: &str) -> (String, Vec<String>) { split_tag(text, "remember") }
+
+/// The delete tags a reply can carry, `[[forget: words that identify it]]`, read the same way. LitePilot only acts
+/// on them when the user's own message asked to forget or delete something.
+pub fn split_forget(text: &str) -> (String, Vec<String>) { split_tag(text, "forget") }
+
+fn split_tag(text: &str, tag: &str) -> (String, Vec<String>) {
+    let open = format!("[[{tag}:");
     let mut kept: Vec<String> = Vec::new();
     let mut facts = Vec::new();
     let mut in_code = false;
@@ -433,9 +493,9 @@ pub fn split_remember(text: &str) -> (String, Vec<String>) {
         if line.trim_start().starts_with("```") { in_code = !in_code; }
         if in_code || line.starts_with("    ") { kept.push(line.to_string()); continue; }
         let mut rest = line.to_string();
-        while let Some(i) = rest.find("[[remember:") {
+        while let Some(i) = rest.find(&open) {
             let Some(j) = rest[i..].find("]]") else { break };
-            let f = rest[i + 11..i + j].trim().to_string();
+            let f = rest[i + open.len()..i + j].trim().to_string();
             if !f.is_empty() { facts.push(f); }
             rest = format!("{}{}", rest[..i].trim_end(), &rest[i + j + 2..]);
         }
@@ -475,6 +535,17 @@ mod tests {
         assert_eq!(parse_command("Do you remember that?"), None);
         assert_eq!(parse_command("remember that "), None);
         assert_eq!(parse_command("forget it"), None);
+        assert_eq!(parse_command("remove glide studio from memories please."), Some(Cmd::Forget("glide studio".into())));
+        assert_eq!(parse_command("Delete \u{201C}Glide Studio\u{201D} from my memory"), Some(Cmd::Forget("Glide Studio".into())));
+        assert_eq!(parse_command("please erase everything about my old car from memory!"), Some(Cmd::Forget("my old car".into())));
+        assert_eq!(parse_command("forget about the Colchester flat"), Some(Cmd::Forget("Colchester flat".into())));
+        assert_eq!(parse_command("delete all memories"), Some(Cmd::Forget(String::new())));
+        assert_eq!(parse_command("remove everything from memory"), Some(Cmd::Forget(String::new())));
+        assert_eq!(parse_command("manage my memories"), Some(Cmd::Manage));
+        assert_eq!(parse_command("Organise memories please"), Some(Cmd::Tidy));
+        assert_eq!(parse_command("remove it from memory"), None);
+        assert_eq!(parse_command("delete the file from my desktop"), None);
+        assert_eq!(parse_command("can you remove glide studio from memory?"), None);
         assert_eq!(parse_command("remember that a\nand b"), None);
     }
     #[test]
