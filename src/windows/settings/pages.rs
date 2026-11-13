@@ -193,7 +193,7 @@ pub(super) fn rows_for(page: Page, st: &St, query: &str) -> Vec<Row> {
             v.push(row(g("\u{E7E8}"), "Sign out", "", Kind::Run(Run::SignOut)));
             let tool = match k { "claude" => "Claude Code", "gemini" => "Antigravity CLI", _ => "Codex" };
             let note = if k == "gemini" {
-                "Uses your Google account through the official Antigravity CLI, which keeps your sign-in safe. The first time, it downloads once (about 250 MB of disk). It stays ready between messages; change that under Performance and resources. Web search is not available with Gemini. Google's terms limit third-party use of Antigravity sign-ins, so use it at your own risk. To sign out fully, type /logout in Antigravity."
+                "Uses your Google account through the official Antigravity CLI, which keeps your sign-in safe. The first time, it downloads once (about 250 MB of disk). It stays ready between messages; change that under Performance and resources. Gemini decides for itself when to search the web. Google's terms limit third-party use of Antigravity sign-ins, so use it at your own risk. To sign out fully, type /logout in Antigravity."
             } else { "" };
             if !note.is_empty() { v.push(hint(note)); } else {
                 v.push(hint(&format!("Uses your {name} plan through the official {tool} app, which keeps your sign-in safe. The first time, it downloads once (about 330 MB of disk). It stays ready between messages; change that under Performance and resources.")));

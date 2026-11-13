@@ -331,7 +331,10 @@ fn ensure_thread(s: &mut Server, cwd: &Path, system: &str) -> Result<(), String>
 /// to it means a fresh conversation (Codex) or process (Claude).
 fn cfg_key(kind: &str, model: &str, effort: &str, search: bool, memory: &str, engine: bool) -> String {
     let m = crate::core::memory::hash(&format!("{memory}{:?}{:?}", MEMTOOL.lock().unwrap_or_else(|e| e.into_inner()), diag_tools()));
-    if kind == "claude" || kind == "gemini" { format!("{model}|{effort}|{search}|{m:x}|{engine}") } else { format!("{search}|{m:x}|{engine}") }
+    // Gemini keeps one process for good: the model and effort are changed inside the running conversation
+    // (see turn_gemini), and nothing else about a message changes how it runs.
+    if kind == "gemini" { String::new() }
+    else if kind == "claude" { format!("{model}|{effort}|{search}|{m:x}|{engine}") } else { format!("{search}|{m:x}|{engine}") }
 }
 
 /// Claude's own memory, in LitePilot's data folder (beside the empty working folder), never in ~/.claude.
@@ -386,9 +389,16 @@ pub fn warm(kind: &str, model: &str, effort: &str, search: bool, memory: &str, e
 
 fn engine_name(kind: &str) -> &'static str { match kind { "claude" => "Claude", "gemini" => "Gemini", _ => "ChatGPT" } }
 
-fn turn_gemini(s: &mut Server, prompt: &str, cwd: &Path, system: &str, sink: &dyn Fn(Event)) -> Option<String> {
+fn turn_gemini(s: &mut Server, model: &str, prompt: &str, cwd: &Path, system: &str, sink: &dyn Fn(Event)) -> Option<String> {
     let fail = |m: String| { sink(Event::Error(m)); None };
+    // A different model or effort is set on the live conversation: no restart, no new conversation.
+    let changed = s.model != model;
+    let had_session = s.thread.is_some();
+    s.model = model.to_string();
     if let Err(e) = ensure_thread(s, cwd, system) { return fail(e); }
+    if changed && had_session && !model.is_empty() {
+        if let Some(id) = s.thread.clone() { let _ = s.call("session/set_model", json!({"sessionId": id, "modelId": model})); }
+    }
     let prompt = match s.intro.take() { Some(i) if !i.trim().is_empty() => format!("{i}\n\n---\n\n{prompt}"), _ => prompt.to_string() };
     s.next_id += 1;
     let id = s.next_id;
@@ -399,11 +409,20 @@ fn turn_gemini(s: &mut Server, prompt: &str, cwd: &Path, system: &str, sink: &dy
     loop {
         let Some(l) = s.line() else { return fail(STOPPED.into()) };
         match rpc::parse(&l) {
-            rpc::Rpc::Response(r, Ok(_)) if r == id => { sink(Event::Done); return Some(reply); }
+            rpc::Rpc::Response(r, Ok(_)) if r == id => {
+                // A reply with no words (the model only wanted a tool) is never shown blank.
+                if reply.trim().is_empty() {
+                    let t = "Gemini didn't send any text. It may have wanted to run something on this PC, which LitePilot doesn't allow.";
+                    reply.push_str(t);
+                    sink(Event::Text(t.into()));
+                }
+                sink(Event::Done);
+                return Some(reply);
+            }
             rpc::Rpc::Response(r, Err(m)) if r == id => return fail(m),
             rpc::Rpc::Request(i) => {
-                let asks_permission = serde_json::from_str::<Value>(&l).is_ok_and(|v| v["method"] == "session/request_permission");
-                s.send(&if asks_permission { rpc::cancel_permission(&i) } else { rpc::decline(&i) });
+                let v = serde_json::from_str::<Value>(&l).unwrap_or(Value::Null);
+                s.send(&if v["method"] == "session/request_permission" { rpc::deny_permission(&i, &v) } else { rpc::decline(&i) });
             }
             _ => match crate::core::protocol::parse_acp_update(&l) {
                 Some(Event::Text(t)) => { reply.push_str(&t); sink(Event::Text(t)); }
@@ -477,7 +496,7 @@ pub fn run(kind: &str, model: &str, effort: &str, search: bool, memory: &str, en
     if kind != "claude" && s.thread.is_none() { sink(Event::Phase("Starting a conversation".into())); }
     let prompt = format!("{}{extra}", if sync { last.text.clone() } else { flatten_prompt(turns) });
     let system = system_for(search, memory);
-    let reply = if kind == "claude" { turn_claude(s, &prompt, media, sink) } else if kind == "gemini" { turn_gemini(s, &prompt, cwd, &system, sink) } else { turn_codex(s, model, effort, &prompt, media, cwd, &system, sink) };
+    let reply = if kind == "claude" { turn_claude(s, &prompt, media, sink) } else if kind == "gemini" { turn_gemini(s, &super::cli::gemini_resolve(model, effort), &prompt, cwd, &system, sink) } else { turn_codex(s, model, effort, &prompt, media, cwd, &system, sink) };
     match reply {
         Some(text) => {
             let mut all = turns.to_vec();

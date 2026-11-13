@@ -43,12 +43,16 @@ fn standing(search_allowed: bool, search: bool, memory_on: bool) -> String {
 /// asked for something, and the message is being sent again.
 #[allow(clippy::too_many_arguments)]
 pub fn plan(kind: &str, mode: &str, search_allowed: bool, chat: &str, turns: &[Msg], last: &str, mem_dir: &Path, asked: Option<&Ask>) -> Plan {
+    // Gemini (Antigravity) searches the web by itself and has none of LitePilot's tools, so nothing here changes what
+    // it runs with: it is never asked to answer [[search]], never told about PC tools, and never restarted for them.
+    let gemini = kind == "gemini";
+    let search_allowed = search_allowed && !gemini;
     let list = if mode == "off" { vec![] } else { memory_store::load(mem_dir) };
     // Sticky per chat: any message in it that needed search (or a model that asked) keeps search on.
     let search = search_allowed && (sticky_search(chat) || users(turns).any(need::search));
     // Diagnostic tools: the union for the chat, for the same reason.
     let mut cats: Vec<&'static str> = Vec::new();
-    for u in users(turns) { for c in diag::route(u) { if !cats.contains(&c) { cats.push(c); } } }
+    if !gemini { for u in users(turns) { for c in diag::route(u) { if !cats.contains(&c) { cats.push(c); } } } }
     cli::set_diag_tools(cats);
     // No lookup tool: the model asks with [[memory: its own search words]] instead, which costs nothing when unused.
     cli::set_memory_tool(mem_dir, false);
@@ -212,10 +216,10 @@ pub fn next_step(now: &Ask, before: Option<&Ask>, search_allowed: bool, search_o
 }
 
 /// What a fresh chat starts with, for warming the CLI before the first message: no tools, nothing extra.
-pub fn warm(mode: &str, search_allowed: bool, mem_dir: &Path) -> String {
+pub fn warm(kind: &str, mode: &str, search_allowed: bool, mem_dir: &Path) -> String {
     cli::set_diag_tools(vec![]);
     cli::set_memory_tool(mem_dir, false);
-    standing(search_allowed, false, mode != "off")
+    standing(search_allowed && kind != "gemini", false, mode != "off")
 }
 
 #[cfg(test)]
@@ -230,13 +234,18 @@ mod tests {
     #[ignore = "talks to the signed-in Claude Code or Codex; quit LitePilot first"]
     fn e2e_reply_timing() {
         let kind = std::env::var("LITEPILOT_E2E_KIND").unwrap_or_else(|_| "claude".into());
-        let (model, effort) = if kind == "claude" { ("haiku", "low") } else { ("gpt-6-luna", "low") };
+        let (model, effort) = if kind == "claude" { ("haiku", "low") } else if kind == "gemini" { ("gemini-4-hydrogen", "low") } else { ("gpt-6-luna", "low") };
+        // LITEPILOT_E2E_MODEL / LITEPILOT_E2E_EFFORT: another model or effort for this run.
+        let (model, effort) = (std::env::var("LITEPILOT_E2E_MODEL").unwrap_or_else(|_| model.into()), std::env::var("LITEPILOT_E2E_EFFORT").unwrap_or_else(|_| effort.into()));
+        let (model, effort) = (model.as_str(), effort.as_str());
         let root = std::env::temp_dir().join(format!("lp-e2e-{}", std::process::id()));
         // LITEPILOT_E2E_MEM: a real memory folder to read (never written), to test with real saved facts.
         let (cwd, mem) = (root.join("empty"), std::env::var("LITEPILOT_E2E_MEM").map(std::path::PathBuf::from).unwrap_or(root.join("mem")));
         std::fs::create_dir_all(&cwd).unwrap();
         std::fs::create_dir_all(&mem).unwrap();
-        let standing = warm("engine", true, &mem);
+        // LITEPILOT_E2E_NOTRIM: leave the engine's memory alone while it idles (the app squeezes it after 5 s).
+        if std::env::var("LITEPILOT_E2E_NOTRIM").is_ok() { cli::configure(false, 5, false, 5); }
+        let standing = warm(&kind, "engine", true, &mem);
         cli::warm(&kind, model, effort, false, &standing, true, &cwd, false);
         std::thread::sleep(std::time::Duration::from_secs(6));
         let mut msgs: Vec<Msg> = vec![];

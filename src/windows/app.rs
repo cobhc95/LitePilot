@@ -735,7 +735,7 @@ pub fn warm_engine(fresh: bool) {
     let mode = memory::effective(&p.memory, true);
     memory_store::adopt_claude_memory(&a.data, &mem_dir());
     // Warmed exactly as a fresh chat's first ordinary message will need it: no tools, no facts.
-    let standing = super::turn_plan::warm(mode, a.cfg.web_search, &mem_dir());
+    let standing = super::turn_plan::warm(&p.kind, mode, a.cfg.web_search, &mem_dir());
     cli::warm(&p.kind, &p.model, &p.effort, false, &standing, mode == "engine", &cwd, fresh);
 }
 
