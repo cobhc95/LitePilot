@@ -275,7 +275,7 @@ pub(super) unsafe extern "system" fn wndproc(h: HWND, msg: u32, wp: WPARAM, lp: 
                 let dpi = GetDpiForWindow(a.hwnd).max(96) as i32;
                 rc.left += dpi * 9 / 96;
                 if let Some(kind) = chip_logo(a) {
-                    let color = if kind == "claude" { 0x5777D9 } else { a.theme.muted };
+                    let color = match kind { "claude" => 0x5777D9, "gemini" => 0xF48542, _ => a.theme.muted };
                     draw_logo(d.hDC, kind, rc.left, (rc.top + rc.bottom) / 2, 14 * dpi / 96, color);
                     rc.left += 20 * dpi / 96;
                 }

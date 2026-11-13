@@ -82,11 +82,11 @@ fn s(v: i32) -> i32 { v * unsafe { GetDpiForWindow(app().hwnd).max(96) } as i32 
 /// Short name and a speed hint: "gpt-6-sol" is "6-SOL", balanced.
 fn describe(slug: &str, name: &str) -> (String, &'static str) {
     if slug.is_empty() { return ("DEFAULT".into(), ""); }
-    let label = if name.eq_ignore_ascii_case(slug) && slug.starts_with("gpt-") { slug.trim_start_matches("gpt-").to_uppercase() } else { slug.to_uppercase() };
+    let label = if name.eq_ignore_ascii_case(slug) && slug.starts_with("gpt-") { slug.trim_start_matches("gpt-").to_uppercase() }
+        else if slug.starts_with("gemini-") { slug.trim_start_matches("gemini-").to_uppercase() } else { slug.to_uppercase() };
     let l = label.to_lowercase();
     let current_gen = !l.starts_with("5.") && !l.starts_with("4");
-    let hint = match () {
-        _ if !current_gen && !matches!(l.as_str(), "haiku" | "sonnet" | "opus") => "",
+    let hint = match () {        _ if !current_gen && !matches!(l.as_str(), "haiku" | "sonnet" | "opus") => "",
         _ if l.contains("luna") || l == "haiku" => "fastest",
         _ if l.contains("sol") || l == "sonnet" => "balanced",
         _ if l.contains("astra") || l == "opus" => "smartest",

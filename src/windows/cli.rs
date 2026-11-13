@@ -41,7 +41,131 @@ pub fn default_path(kind: &str) -> PathBuf {
     }
 }
 
+// ---- Google Antigravity CLI (`agy`): the successor of Gemini CLI for personal Google accounts. ----
+// Its own installer puts it in %LOCALAPPDATA%\agy\bin. LitePilot runs it as `agy acp` (JSON-RPC over stdio).
+
+fn agy_dir() -> PathBuf { env_path("LOCALAPPDATA", r"LitePilot\Agy") }
+
+/// The installed `agy.exe`: where Google's installer puts it, else anywhere on the PATH.
+fn find_agy() -> Option<PathBuf> {
+    let d = env_path("LOCALAPPDATA", r"agy\bin\agy.exe");
+    if d.is_file() { return Some(d); }
+    std::env::split_paths(&std::env::var_os("PATH")?).map(|p| p.join("agy.exe")).find(|p| p.is_file())
+}
+
+/// A command that runs the CLI `kind`. None when it isn't installed.
+pub fn command(kind: &str) -> Option<std::process::Command> {
+    Some(hidden(find(kind)?.to_str()?))
+}
+
+static GEMINI_MODELS: std::sync::Mutex<Vec<(String, String)>> = std::sync::Mutex::new(Vec::new());
+static GEMINI_MODELS_AT: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+
+/// What `agy models` last reported, as (id, display name) (kept in memory and in a small file).
+/// Empty until the first check after signing in; nothing is assumed about which models exist.
+pub fn gemini_models() -> Vec<(String, String)> {
+    let mut g = GEMINI_MODELS.lock().unwrap_or_else(|e| e.into_inner());
+    if g.is_empty() {
+        if let Some(v) = std::fs::read_to_string(agy_dir().join("models.json")).ok().and_then(|s| serde_json::from_str::<Vec<(String, String)>>(&s).ok()) { *g = v; }
+    }
+    g.clone()
+}
+
+/// Asks `agy models` for the list in the background, at most once an hour (and once per launch), once signed in.
+pub fn refresh_gemini_models() {
+    {
+        let mut at = GEMINI_MODELS_AT.lock().unwrap_or_else(|e| e.into_inner());
+        if at.is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(3600)) || !is_signed_in("gemini") { return; }
+        *at = Some(std::time::Instant::now());
+    }
+    std::thread::spawn(|| {
+        let Some(mut c) = command("gemini") else { return };
+        let Ok(o) = c.arg("models").output() else { return };
+        // One model per line: its id, a tab, then its name with the effort in brackets, e.g. "Gemini 4 Argon (High)".
+        let list: Vec<(String, String)> = String::from_utf8_lossy(&o.stdout).lines()
+            .filter_map(|l| l.split_once('\t')).map(|(i, n)| (i.trim().to_string(), n.trim().to_string()))
+            .filter(|(i, _)| !i.is_empty() && !i.contains(' ')).collect();
+        if list.is_empty() { return; }
+        let _ = std::fs::create_dir_all(agy_dir());
+        let _ = std::fs::write(agy_dir().join("models.json"), serde_json::to_string(&list).unwrap_or_default());
+        *GEMINI_MODELS.lock().unwrap_or_else(|e| e.into_inner()) = list;
+    });
+}
+
+/// One model with its effort levels. Variants such as "Gemini 4 Argon (Low)" and "(High)" whose ids end in the
+/// same word are one model (`key` is the id without that word); anything else stands alone with no efforts.
+pub struct GemGroup { pub key: String, pub name: String, pub efforts: Vec<(String, String)> }
+
+pub fn gemini_groups() -> Vec<GemGroup> {
+    // The effort words `agy --effort` documents, to order them; any other word sorts after them.
+    const ORDER: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
+    let mut out: Vec<GemGroup> = vec![];
+    for (id, name) in gemini_models() {
+        let split = name.strip_suffix(')').and_then(|n| n.rsplit_once(" (")).map(|(b, e)| (b.to_string(), e.to_lowercase()))
+            .filter(|(_, e)| id.to_lowercase().ends_with(&format!("-{e}")));
+        match split {
+            Some((base, eff)) => {
+                let key = id[..id.len() - eff.len() - 1].to_string();
+                match out.iter_mut().find(|g| g.key == key) {
+                    Some(g) => g.efforts.push((eff, id)),
+                    None => out.push(GemGroup { key, name: base, efforts: vec![(eff, id)] }),
+                }
+            }
+            None => out.push(GemGroup { key: id, name, efforts: vec![] }),
+        }
+    }
+    for g in out.iter_mut() { g.efforts.sort_by_key(|(e, _)| ORDER.iter().position(|o| o == e).unwrap_or(ORDER.len())); }
+    out
+}
+
+/// The exact model id for a chosen model and effort. An effort the model doesn't have gets its middle-most
+/// level.
+pub fn gemini_resolve(model: &str, effort: &str) -> String {
+    if model.is_empty() { return String::new(); }
+    let groups = gemini_groups();
+    // A name Antigravity no longer lists (such as one saved from an earlier version) falls back to its default.
+    let Some(g) = groups.iter().find(|g| g.key == model) else { return if groups.is_empty() { model.to_string() } else { String::new() } };
+    if g.efforts.is_empty() { return g.key.clone(); }
+    let pick = g.efforts.iter().find(|(e, _)| e == effort).unwrap_or(&g.efforts[(g.efforts.len() - 1) / 2]);
+    pick.1.clone()
+}
+
+/// Antigravity keeps its sign-in in the Windows credential store and has no status command, so LitePilot
+/// remembers that a sign-in finished (or that a conversation was made) with a small marker file.
+fn agy_marker() -> PathBuf { agy_dir().join("signed-in") }
+pub fn mark_gemini_signed_in() {
+    let _ = std::fs::create_dir_all(agy_dir());
+    let _ = std::fs::write(agy_marker(), b"1");
+}
+
+/// Runs Google's official installer (downloaded here and run as text, like the Claude one).
+fn install_agy() -> Result<(), String> {
+    let script = super::http::fetch("https://antigravity.google/cli/install.ps1", 2 * 1024 * 1024).ok_or("Could not download Google's Antigravity installer. Check your connection.")?;
+    let file = std::env::temp_dir().join("litepilot-install-agy.ps1");
+    std::fs::write(&file, script).map_err(|e| format!("Could not save the installer: {e}"))?;
+    let _ = hidden("powershell.exe").args(["-NoProfile", "-Command", "Invoke-Expression ([IO.File]::ReadAllText($env:LP_SCRIPT))"]).env("LP_SCRIPT", &file).status();
+    let _ = std::fs::remove_file(&file);
+    if find_agy().is_some() { Ok(()) } else { Err("Installing Antigravity failed.".into()) }
+}
+
+fn error_box(title: &str, e: &str) {
+    unsafe { windows_sys::Win32::UI::WindowsAndMessaging::MessageBoxW(std::ptr::null_mut(), super::util::w(e).as_ptr(), super::util::w(title).as_ptr(), windows_sys::Win32::UI::WindowsAndMessaging::MB_OK | windows_sys::Win32::UI::WindowsAndMessaging::MB_ICONERROR); }
+}
+
+/// Installs Antigravity if needed, then its own Google sign-in (`agy acp --login`) in a visible console.
+fn gemini_sign_in() {
+    use std::os::windows::process::CommandExt;
+    if find_agy().is_none() {
+        if let Err(e) = install_agy() { return error_box("Antigravity installation failed", &e); }
+    }
+    if is_signed_in("gemini") { return; }
+    let Some(exe) = find_agy() else { return };
+    let ok = std::process::Command::new(exe).args(["acp", "--login"]).creation_flags(0x10).status().is_ok_and(|s| s.success());
+    if ok { mark_gemini_signed_in(); }
+}
+
 pub fn find(kind: &str) -> Option<PathBuf> {
+    if kind == "gemini" { return find_agy(); }
     let d = default_path(kind);
     if d.exists() { return Some(d); }
     if kind == "codex" {
@@ -160,10 +284,15 @@ fn fetch_codex_usage() -> Option<()> {
 }
 
 pub fn install_url(kind: &str) -> &'static str {
-    if kind == "claude" { "https://claude.ai/install.ps1" } else { "https://releases.openai.com/codex/channels/latest" }
+    match kind {
+        "claude" => "https://claude.ai/install.ps1",
+        "gemini" => "https://antigravity.google/cli/install.ps1",
+        _ => "https://releases.openai.com/codex/channels/latest",
+    }
 }
 
 pub fn is_signed_in(kind: &str) -> bool {
+    if kind == "gemini" { return find(kind).is_some() && agy_marker().is_file(); }
     let Some(exe) = find(kind) else { return false };
     let mut c = hidden(exe.to_str().unwrap_or_default());
     if kind == "claude" { c.args(["auth", "status"]); } else { c.args(["login", "status"]); }
@@ -179,6 +308,7 @@ pub fn is_signed_in(kind: &str) -> bool {
 /// Runs the official installer if needed, then its login, in a visible console. Blocks until closed.
 pub fn sign_in(kind: &str) {
     use std::os::windows::process::CommandExt;
+    if kind == "gemini" { return gemini_sign_in(); }
     let exe = if kind == "codex" {
         match find(kind).map(Ok).unwrap_or_else(install_codex) {
             Ok(p) => p,
@@ -204,6 +334,11 @@ pub fn sign_in(kind: &str) {
 }
 
 pub fn sign_out(kind: &str) {
+    if kind == "gemini" {
+        // Antigravity has no sign-out command outside its own prompt (`/logout`); this makes LitePilot stop using it.
+        let _ = std::fs::remove_file(agy_marker());
+        return;
+    }
     if let Some(exe) = find(kind) {
         let mut c = hidden(exe.to_str().unwrap_or_default());
         if kind == "claude" { c.args(["auth", "logout"]); } else { c.arg("logout"); }

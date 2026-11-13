@@ -16,6 +16,19 @@ pub enum Event {
     Error(String),
 }
 
+/// Gemini CLI's ACP `session/update` notifications: the reply's text, and what it is busy with.
+pub fn parse_acp_update(line: &str) -> Option<Event> {
+    let v: Value = serde_json::from_str(line).ok()?;
+    if v["method"] != "session/update" { return None; }
+    let u = &v["params"]["update"];
+    match u["sessionUpdate"].as_str()? {
+        "agent_message_chunk" => u["content"]["text"].as_str().filter(|t| !t.is_empty()).map(|t| Event::Text(t.into())),
+        "agent_thought_chunk" => Some(Event::Status("Thinking".into())),
+        "tool_call" => Some(Event::Status("Working".into())),
+        _ => None,
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum ApiFormat {
     OpenAi,

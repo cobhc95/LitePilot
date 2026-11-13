@@ -14,7 +14,7 @@ pub struct Profile {
 }
 impl Profile {
     pub fn is_login(&self) -> bool {
-        self.kind == "claude" || self.kind == "codex"
+        matches!(self.kind.as_str(), "claude" | "codex" | "gemini")
     }
 }
 
@@ -127,8 +127,9 @@ impl Default for Config {
         // New installs start on each service's fastest model at its lowest effort; change them from the model menu.
         let login = |id: &str, name: &str| Profile {
             id: id.into(), name: name.into(), kind: id.into(), base_url: String::new(),
-            model: if id == "claude" { "haiku" } else { "gpt-6-luna" }.into(), effort: "low".into(),
-            memory: super::memory::default_for(true).into(),
+            model: match id { "claude" => "haiku", "gemini" => "", _ => "gpt-6-luna" }.into(), effort: if id == "gemini" { "" } else { "low" }.into(),
+            // Gemini has no memory of its own to use, so it starts on LitePilot's local facts.
+            memory: if id == "gemini" { "local".into() } else { super::memory::default_for(true).into() },
         };
         Config {
             active: "claude".into(),
@@ -163,7 +164,7 @@ impl Default for Config {
             spacing: "normal".into(),
             chat_zoom: 100,
             keys: Vec::new(),
-            profiles: vec![login("claude", "Claude"), login("codex", "ChatGPT")],
+            profiles: vec![login("claude", "Claude"), login("codex", "ChatGPT"), login("gemini", "Gemini")],
         }
     }
 }
@@ -182,7 +183,7 @@ impl Config {
         let st = |k: &str, def: &str| v[k].as_str().unwrap_or(def).to_string();
         let mut profiles: Vec<Profile> = v["profiles"].as_array().map(|a| a.iter().map(|p| {
             let s = |k: &str| p[k].as_str().unwrap_or("").to_string();
-            Profile { id: s("id"), name: s("name"), kind: s("kind"), base_url: s("base_url"), model: s("model"), effort: s("effort"), memory: super::memory::effective(&s("memory"), matches!(p["kind"].as_str(), Some("claude" | "codex"))).into() }
+            Profile { id: s("id"), name: s("name"), kind: s("kind"), base_url: s("base_url"), model: s("model"), effort: s("effort"), memory: super::memory::effective(&s("memory"), matches!(p["kind"].as_str(), Some("claude" | "codex" | "gemini"))).into() }
         }).filter(|p| !p.id.is_empty()).collect()).unwrap_or_default();
         for b in d.profiles.iter().rev() {
             if !profiles.iter().any(|p| p.id == b.id) {
@@ -190,7 +191,9 @@ impl Config {
             }
         }
         for p in profiles.iter_mut().filter(|p| p.is_login()) {
-            p.name = if p.kind == "claude" { "Claude" } else { "ChatGPT" }.into();
+            p.name = match p.kind.as_str() { "claude" => "Claude", "gemini" => "Gemini", _ => "ChatGPT" }.into();
+            // Gemini has no engine memory: an engine setting means Local.
+            if p.kind == "gemini" && p.memory == "engine" { p.memory = "local".into(); }
         }
         Config {
             active: st("active", &d.active),

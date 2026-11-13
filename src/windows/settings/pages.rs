@@ -6,7 +6,9 @@ use super::*;
 pub(super) fn page_title(p: Page) -> &'static str {
     match p {
         Page::Home => "Settings",
+        Page::Subs => "Subscriptions",
         Page::Login("claude") => "Claude",
+        Page::Login("gemini") => "Gemini",
         Page::Login(_) => "ChatGPT",
         Page::Api => "API key",
         Page::Models => "Models in the menu",
@@ -32,7 +34,7 @@ pub(super) fn toggle_meta(t: Tog) -> (&'static str, &'static str, &'static str) 
         Tog::Autostart => ("\u{E7E8}", "Start with Windows", "Keeps LitePilot ready after you sign in to Windows"),
         Tog::Blur => ("\u{E8A7}", "Hide when clicking outside", "Hides the popup when you click another window"),
         Tog::Taskbar => ("\u{E8FC}", "Hide from the taskbar and Alt+Tab", "Open it with the shortcut or the tray icon"),
-        Tog::Web => ("\u{E774}", "Let Claude and ChatGPT search the web", "Finds pictures and current facts. Adds a little time"),
+        Tog::Web => ("\u{E774}", "Let AI agents search the web", "Finds pictures and current facts. Adds a little time"),
         Tog::Wrap => ("\u{E8A5}", "Wrap wide tables to fit", "Off: wide tables keep their width and the chat scrolls sideways"),
         Tog::Mic => ("\u{E720}", "Allow dictation", "Mic button and shortcut, using Windows voice typing"),
         Tog::OnTop => ("\u{E718}", "Keep on top of other windows", "Stays above other windows"),
@@ -169,8 +171,7 @@ pub(super) fn rows_for(page: Page, st: &St, query: &str) -> Vec<Row> {
                 Some(v) => row(g("\u{E895}"), &format!("Update {v} available"), &format!("You have LitePilot {}. Open the download page", crate::core::VERSION), Kind::Run(Run::UpdateCheck)),
                 None => row(g("\u{E895}"), "Check for updates", &format!("You have LitePilot {}. Look for a newer version now", crate::core::VERSION), Kind::Run(Run::UpdateCheck)),
             },
-            row(Icon::Chatgpt, "ChatGPT", if c.active == "codex" { "In use. Sign in with your plan" } else { "Sign in with your plan" }, Kind::Nav(Page::Login("codex"))),
-            row(Icon::Claude, "Claude", if c.active == "claude" { "In use. Sign in with your plan" } else { "Sign in with your plan" }, Kind::Nav(Page::Login("claude"))),
+            row(g("\u{E77B}"), "Subscriptions", "ChatGPT, Claude, and Gemini", Kind::Nav(Page::Subs)),
             row(g("\u{E8D7}"), "API key", "OpenCode, DeepSeek, and others", Kind::Nav(Page::Api)),
             row(g("\u{E7E8}"), "Shortcut and startup", "Shortcut, taskbar, Copilot key", Kind::Nav(Page::Startup)),
             row(g("\u{E790}"), "Appearance", "Theme, colors, font, size", Kind::Nav(Page::Appearance)),
@@ -180,13 +181,23 @@ pub(super) fn rows_for(page: Page, st: &St, query: &str) -> Vec<Row> {
             row(g("\u{E8B7}"), "Your data", "Where it is, sizes, delete", Kind::Nav(Page::Data)),
             row(g("\u{E8F1}"), "Back up and move", "Export or import your memories and settings", Kind::Nav(Page::Backup)),
         ],
+        Page::Subs => vec![
+            row(Icon::Chatgpt, "ChatGPT", if c.active == "codex" { "In use. Sign in with your plan" } else { "Sign in with your plan" }, Kind::Nav(Page::Login("codex"))),
+            row(Icon::Claude, "Claude", if c.active == "claude" { "In use. Sign in with your plan" } else { "Sign in with your plan" }, Kind::Nav(Page::Login("claude"))),
+            row(Icon::Gemini, "Gemini", if c.active == "gemini" { "In use. Sign in with your Google account" } else { "Sign in with your Google account" }, Kind::Nav(Page::Login("gemini"))),
+        ],
         Page::Login(k) => {
-            let name = if k == "claude" { "Claude" } else { "ChatGPT" };
+            let name = match k { "claude" => "Claude", "gemini" => "Gemini", _ => "ChatGPT" };
             let mut v = vec![row(g(if st.signed_in { "\u{E73E}" } else { "\u{E783}" }), if st.signed_in { "Signed in" } else { "Not signed in" }, &st.login_note, Kind::Info)];
             v.push(row(g("\u{E77B}"), &if st.signed_in { format!("Use {name} for chats") } else { format!("Sign in to {name}") }, if st.signed_in { "Chats will use this account" } else { "Opens your browser" }, Kind::Run(Run::SignIn)));
             v.push(row(g("\u{E7E8}"), "Sign out", "", Kind::Run(Run::SignOut)));
-            let tool = if k == "claude" { "Claude Code" } else { "Codex" };
-            v.push(hint(&format!("Uses your {name} plan through the official {tool} app, which keeps your sign-in safe. The first time, it downloads once (about 330 MB of disk). It stays ready between messages; change that under Performance and resources.")));
+            let tool = match k { "claude" => "Claude Code", "gemini" => "Antigravity CLI", _ => "Codex" };
+            let note = if k == "gemini" {
+                "Uses your Google account through the official Antigravity CLI, which keeps your sign-in safe. The first time, it downloads once (about 250 MB of disk). It stays ready between messages; change that under Performance and resources. Web search is not available with Gemini. Google's terms limit third-party use of Antigravity sign-ins, so use it at your own risk. To sign out fully, type /logout in Antigravity."
+            } else { "" };
+            if !note.is_empty() { v.push(hint(note)); } else {
+                v.push(hint(&format!("Uses your {name} plan through the official {tool} app, which keeps your sign-in safe. The first time, it downloads once (about 330 MB of disk). It stays ready between messages; change that under Performance and resources.")));
+            }
             v.push(row(g(toggle_meta(Tog::Web).0), toggle_meta(Tog::Web).1, "", Kind::Toggle(Tog::Web)));
             v
         }
@@ -363,7 +374,7 @@ pub(super) fn rows_for(page: Page, st: &St, query: &str) -> Vec<Row> {
 /// Every setting with a name, for the home search: (page, position among that page's selectable rows, title, where).
 pub(super) fn index(st: &St) -> Vec<(Page, usize, String, String)> {
     let mut out = vec![];
-    for p in [Page::Login("codex"), Page::Login("claude"), Page::Api, Page::Startup, Page::Appearance, Page::Keys, Page::Memory, Page::ChatMem, Page::Data, Page::Backup] {
+    for p in [Page::Login("codex"), Page::Login("claude"), Page::Login("gemini"), Page::Api, Page::Startup, Page::Appearance, Page::Keys, Page::Memory, Page::ChatMem, Page::Data, Page::Backup] {
         let rows = rows_for(p, st, "");
         for (i, r) in rows.iter().filter(|r| r.kind.selectable()).enumerate() {
             out.push((p, i, r.title.clone(), page_title(p).to_string()));

@@ -303,6 +303,8 @@ fn chip_label(p: &Profile) -> String {
         ("claude", false) => p.model.to_uppercase(),
         ("codex", true) => "CHATGPT".into(),
         ("codex", false) => p.model.trim_start_matches("gpt-").to_uppercase(),
+        ("gemini", true) => "GEMINI".into(),
+        ("gemini", false) => p.model.trim_start_matches("gemini-").to_uppercase(),
         (_, true) => p.name.clone(),
         (_, false) => p.model.clone(),
     }
@@ -311,7 +313,7 @@ fn chip_label(p: &Profile) -> String {
 /// The logo to draw beside the chip, only while the button is showing the chip (not "Thinking" or "Copied").
 fn chip_logo(a: &App) -> Option<&'static str> {
     let p = a.cfg.active_profile();
-    let kind = match p.kind.as_str() { "claude" => "claude", "codex" => "codex", _ => return None };
+    let kind = match p.kind.as_str() { "claude" => "claude", "codex" => "codex", "gemini" => "gemini", _ => return None };
     (get_text(a.header) == chip_label(p)).then_some(kind)
 }
 
@@ -726,6 +728,7 @@ fn render_tail() {
 pub fn warm_engine(fresh: bool) {
     let a = app();
     let p = a.cfg.active_profile();
+    if p.kind == "gemini" { cli::refresh_gemini_models(); }
     if !a.cfg.prewarm || !p.is_login() { return; }
     let cwd = a.data.join("empty");
     let _ = std::fs::create_dir_all(&cwd);
@@ -1139,6 +1142,12 @@ pub fn changed_profile() {
 pub fn model_list(p: &Profile) -> Vec<(String, String)> {
     if p.kind == "claude" {
         [("Default", ""), ("Opus", "opus"), ("Sonnet", "sonnet"), ("Haiku", "haiku")].iter().map(|m| (m.0.to_string(), m.1.to_string())).collect()
+    } else if p.kind == "gemini" {
+        // Whatever `agy models` reports, one entry per model (its effort levels are in the Effort row); the one in use stays listed.
+        cli::refresh_gemini_models();
+        let mut v: Vec<(String, String)> = cli::gemini_groups().into_iter().map(|g| (g.name, g.key)).collect();
+        if !p.model.is_empty() && !v.iter().any(|m| m.1 == p.model) { v.insert(0, (p.model.clone(), p.model.clone())); }
+        std::iter::once(("Default".to_string(), String::new())).chain(v).collect()
     } else if !p.is_login() {
         // API accounts: the models the provider listed for this key (see core::models), with the current one kept even if unlisted.
         api_models(p).into_iter().map(|m| (m.name, m.id)).collect()
@@ -1164,7 +1173,10 @@ pub fn api_models(p: &Profile) -> Vec<crate::core::models::Found> {
 /// and for an API account whatever the model in use accepts (none at all for a model that doesn't reason).
 pub fn effort_choices(p: &Profile) -> Vec<String> {
     let mut v = vec![String::new()];
-    if p.is_login() { v.extend(["low", "medium", "high"].map(String::from)); }
+    if p.kind == "gemini" {
+        // The effort levels the chosen model has (none for a model without variants, or on Default).
+        if let Some(g) = cli::gemini_groups().into_iter().find(|g| g.key == p.model) { v.extend(g.efforts.into_iter().map(|e| e.0)); }
+    } else if p.is_login() { v.extend(["low", "medium", "high"].map(String::from)); }
     else { v.extend(crate::core::models::efforts_for(&app().data, &p.id, &p.model)); }
     v
 }

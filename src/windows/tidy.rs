@@ -2,7 +2,6 @@
 //! no web, no memory of its own), run on a background thread with everything it needs captured first, because
 //! the app's state belongs to the window's thread. Before any merge is saved the old list is kept for Undo.
 use super::{cli, http, memory_store, secrets};
-use super::util::hidden;
 use crate::core::protocol::*;
 use crate::core::tidy::{self, Merge};
 use crate::core::{config::Profile, memory, Msg};
@@ -25,6 +24,8 @@ pub fn choices(profiles: &[Profile]) -> Vec<(String, String, String)> {
     for p in profiles {
         if p.kind == "claude" {
             for m in ["haiku", "sonnet", "opus"] { out.push((p.id.clone(), m.to_string(), format!("{} \u{00B7} {m}", p.name))); }
+        } else if p.kind == "gemini" {
+            // Not offered: Antigravity's one-shot mode can't take a long list on stdin.
         } else if p.kind == "codex" {
             for m in cli::codex_models() { out.push((p.id.clone(), m.clone(), format!("{} \u{00B7} {}", p.name, m.trim_start_matches("gpt-")))); }
         } else if !p.model.is_empty() {
@@ -46,12 +47,14 @@ fn oneshot(c: &Ctx, user: &str) -> Result<String, String> {
         let (t, e) = (text.into_inner(), err.into_inner());
         return if t.trim().is_empty() { Err(if e.is_empty() { "The model sent no reply.".into() } else { e }) } else { Ok(t) };
     }
-    let exe = cli::find(&p.kind).ok_or("Not signed in yet.")?;
+    cli::find(&p.kind).ok_or("Not signed in yet.")?;
     let cwd = c.data.join("empty");
     let _ = std::fs::create_dir_all(&cwd);
     let out_file = std::env::temp_dir().join(format!("lp-tidy-{}.txt", std::process::id()));
-    let mut cmd = hidden(exe.to_str().ok_or("Bad path.")?);
+    let mut cmd = cli::command(&p.kind).ok_or("Not signed in yet.")?;
     cmd.current_dir(&cwd).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
+    if p.kind == "gemini" { return Err("Tidy isn't available with Gemini. Choose another account for tidying.".into()); }
+    let plain_stdout = p.kind == "claude";
     let input = if p.kind == "claude" {
         cmd.args(["-p", "--tools", "", "--no-session-persistence", "--strict-mcp-config", "--setting-sources", "", "--disable-slash-commands", "--system-prompt", tidy::SYSTEM]);
         if !c.model.is_empty() { cmd.args(["--model", &c.model]); }
@@ -71,7 +74,7 @@ fn oneshot(c: &Ctx, user: &str) -> Result<String, String> {
     let got = rx.recv_timeout(Duration::from_secs(240));
     let _ = child.kill();
     let _ = child.wait();
-    let text = if p.kind == "claude" { got.map_err(|_| "The model took too long.".to_string())? } else {
+    let text = if plain_stdout { got.map_err(|_| "The model took too long.".to_string())? } else {
         let t = std::fs::read_to_string(&out_file).unwrap_or_default();
         let _ = std::fs::remove_file(&out_file);
         if t.trim().is_empty() { got.map_err(|_| "The model took too long.".to_string())? } else { t }

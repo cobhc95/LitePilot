@@ -335,7 +335,7 @@ pub(super) fn sign_in(h: HWND, kind: &'static str, st: &mut St) {
 }
 
 pub(super) fn start_signin(h: HWND, kind: &'static str, st: &mut St) {
-    st.status = if kind == "codex" && cli::find(kind).is_none() { "Downloading Codex; sign-in opens when it is ready\u{2026}" } else { "Finish signing in using the windows that open\u{2026}" }.into();
+    st.status = if kind != "claude" && cli::find(kind).is_none() { "Downloading the official app; sign-in opens when it is ready\u{2026}" } else { "Finish signing in using the windows that open\u{2026}" }.into();
     let hv = h as usize;
     std::thread::spawn(move || {
         cli::sign_in(kind);
@@ -378,7 +378,7 @@ pub(super) fn go_back(h: HWND, st: &mut St) {
     if st.page == Page::Home { unsafe { PostMessageW(h, WM_CLOSE, 0, 0); } return; }
     // Back lands on the item that was opened, one level up.
     let from = st.page;
-    let parent = if from == Page::Models { Page::Api } else if matches!(from, Page::ManageMem | Page::Tidy | Page::ImpExp | Page::Limits) { Page::ChatMem } else { Page::Home };
+    let parent = if from == Page::Models { Page::Api } else if matches!(from, Page::Login(_)) { Page::Subs } else if matches!(from, Page::ManageMem | Page::Tidy | Page::ImpExp | Page::Limits) { Page::ChatMem } else { Page::Home };
     if parent == Page::ChatMem { st.mem = memory_store::load(&app::mem_dir()); }
     let sel = rows_for(parent, st, "").iter().filter(|r| r.kind.selectable()).position(|r| matches!(r.kind, Kind::Nav(p) if p == from)).unwrap_or(0);
     goto(st, parent, sel);

@@ -2,7 +2,6 @@
 //! streaming-input mode and Codex as `app-server`; both keep the conversation themselves. The CLI (and
 //! anything it starts) lives in a job object: it dies with LitePilot, its memory is trimmed back to the
 //! minimum a few seconds after each reply, and it is shut down after a few idle minutes.
-use super::util::hidden;
 use crate::core::protocol::{flatten_prompt, parse_claude_line, Event};
 use crate::core::usage::cli_tokens;
 use crate::core::{attach, resident as rpc, Msg};
@@ -47,6 +46,9 @@ struct Server {
     next_id: u64,
     /// Codex: conversations are saved so its own memory can learn from them.
     engine: bool,
+    /// Gemini: the model chosen for each conversation, and LitePilot's instructions still to go before its first message.
+    model: String,
+    intro: Option<String>,
 }
 unsafe impl Send for Server {}
 
@@ -150,8 +152,7 @@ fn self_exe() -> String { super::util::exe_path().to_string_lossy().replace('\\'
 
 #[allow(clippy::too_many_arguments)]
 fn spawn(kind: &str, model: &str, effort: &str, search: bool, memory: &str, engine: bool, cwd: &Path, cfg: String) -> Option<Server> {
-    let exe = super::cli::find(kind)?;
-    let mut c = hidden(exe.to_str()?);
+    let mut c = super::cli::command(kind)?;
     c.current_dir(cwd).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
     if kind == "claude" {
         // No tools at all for ordinary chat; web search and page reading only once a message in this chat needed
@@ -185,6 +186,10 @@ fn spawn(kind: &str, model: &str, effort: &str, search: bool, memory: &str, engi
         if !model.is_empty() { c.args(["--model", model]); }
         // Low effort runs without thinking (set above); the effort flag would turn adaptive thinking back on.
         if !effort.is_empty() && effort != "low" { c.args(["--effort", effort]); }
+    } else if kind == "gemini" {
+        // Google Antigravity's Agent Client Protocol: JSON-RPC over stdio, like Codex's app-server. It never
+        // grants a tool (permission asks are cancelled). The model is chosen per conversation (set_model).
+        c.args(["acp", "--disable-telemetry"]);
     } else {
         c.arg("app-server");
         // Chat only: nothing that starts helper processes or takes memory for tools this app never uses.
@@ -223,11 +228,19 @@ fn spawn(kind: &str, model: &str, effort: &str, search: bool, memory: &str, engi
     let (stdin, stdout) = (child.stdin.take()?, child.stdout.take()?);
     let job = super::util::job_for(&child);
     JOB.store(job as isize, Ordering::SeqCst);
-    Some(Server { child, stdin, out: BufReader::new(stdout), job, kind: kind.into(), cfg, thread: None, known: (0, rpc::hash(&[])), last: Instant::now(), trimmed: false, next_id: 0, engine })
+    Some(Server { child, stdin, out: BufReader::new(stdout), job, kind: kind.into(), cfg, thread: None, known: (0, rpc::hash(&[])), last: Instant::now(), trimmed: false, next_id: 0, engine, model: if kind == "gemini" { super::cli::gemini_resolve(model, effort) } else { model.to_string() }, intro: None })
 }
 
 /// Codex: initialize the protocol once per process.
 fn handshake(s: &mut Server) -> Result<(), String> {
+    if s.kind == "gemini" {
+        // Without a sign-in the CLI would open a browser and wait; say so instead.
+        if !super::cli::is_signed_in("gemini") { return Err("Not signed in yet. Open Settings, then Subscriptions, then Gemini, and click Sign in.".into()); }
+        s.call("initialize", json!({"protocolVersion": 1, "clientCapabilities": {}}))?;
+        // Uses the Google sign-in the CLI already holds; a failure here shows up when the session is made.
+        let _ = s.call("authenticate", json!({"methodId": "oauth-personal"}));
+        return Ok(());
+    }
     s.call("initialize", json!({"clientInfo": {"name": "LitePilot", "version": "1"}}))?;
     s.send(&rpc::notification("initialized"));
     // The models whose Fast (priority) tier costs no extra usage, so every reply can use it.
@@ -294,6 +307,18 @@ fn message_end(line: &str) -> Option<(u64, bool)> {
 /// The conversation inside a running Codex: made once, then reused for every message that follows on from it.
 fn ensure_thread(s: &mut Server, cwd: &Path, system: &str) -> Result<(), String> {
     if s.thread.is_some() { return Ok(()); }
+    if s.kind == "gemini" {
+        let r = s.call("session/new", json!({"cwd": cwd, "mcpServers": []}))?;
+        let Some(id) = r["sessionId"].as_str().map(String::from) else { return Err("Gemini didn't start a conversation. Try Sign in from Settings.".into()) };
+        s.thread = Some(id.clone());
+        super::cli::mark_gemini_signed_in();
+        // The menu shows the models this account can use, as `agy models` reports them.
+        super::cli::refresh_gemini_models();
+        if !s.model.is_empty() { let m = s.model.clone(); let _ = s.call("session/set_model", json!({"sessionId": id, "modelId": m})); }
+        // No flag replaces Antigravity's own instructions, so LitePilot's go in front of the first message.
+        s.intro = Some(system.to_string());
+        return Ok(());
+    }
     // LitePilot's short instructions replace Codex's coding-agent prompt (about 3,400 tokens less per message).
     let r = s.call("thread/start", json!({"cwd": cwd, "ephemeral": !s.engine, "sandbox": "read-only", "approvalPolicy": "never", "baseInstructions": system}))?;
     match r["thread"]["id"].as_str() {
@@ -306,7 +331,7 @@ fn ensure_thread(s: &mut Server, cwd: &Path, system: &str) -> Result<(), String>
 /// to it means a fresh conversation (Codex) or process (Claude).
 fn cfg_key(kind: &str, model: &str, effort: &str, search: bool, memory: &str, engine: bool) -> String {
     let m = crate::core::memory::hash(&format!("{memory}{:?}{:?}", MEMTOOL.lock().unwrap_or_else(|e| e.into_inner()), diag_tools()));
-    if kind == "claude" { format!("{model}|{effort}|{search}|{m:x}|{engine}") } else { format!("{search}|{m:x}|{engine}") }
+    if kind == "claude" || kind == "gemini" { format!("{model}|{effort}|{search}|{m:x}|{engine}") } else { format!("{search}|{m:x}|{engine}") }
 }
 
 /// Claude's own memory, in LitePilot's data folder (beside the empty working folder), never in ~/.claude.
@@ -344,7 +369,7 @@ pub fn warm(kind: &str, model: &str, effort: &str, search: bool, memory: &str, e
             if !fresh && (same || busy) { return; }
             if same && !busy && (kind == "claude" || s.thread.is_some()) { return; }
             // Codex: same process, just a new conversation made ready now instead of at the first message.
-            if same && kind == "codex" {
+            if same && (kind == "codex" || kind == "gemini") {
                 s.thread = None;
                 s.known = (0, rpc::hash(&[]));
                 if ensure_thread(s, &cwd, &system_for(search, &memory)).is_err() { if let Some(s) = g.take() { s.kill(); } }
@@ -353,13 +378,41 @@ pub fn warm(kind: &str, model: &str, effort: &str, search: bool, memory: &str, e
         }
         if let Some(s) = g.take() { s.kill(); }
         let Some(mut s) = spawn(&kind, &model, &effort, search, &memory, engine, &cwd, cfg) else { return };
-        if kind == "codex" && (handshake(&mut s).is_err() || ensure_thread(&mut s, &cwd, &system_for(search, &memory)).is_err()) { s.kill(); return; }
+        if (kind == "codex" || kind == "gemini") && (handshake(&mut s).is_err() || ensure_thread(&mut s, &cwd, &system_for(search, &memory)).is_err()) { s.kill(); return; }
         *g = Some(s);
         start_reaper();
     });
 }
 
-fn engine_name(kind: &str) -> &'static str { if kind == "claude" { "Claude" } else { "ChatGPT" } }
+fn engine_name(kind: &str) -> &'static str { match kind { "claude" => "Claude", "gemini" => "Gemini", _ => "ChatGPT" } }
+
+fn turn_gemini(s: &mut Server, prompt: &str, cwd: &Path, system: &str, sink: &dyn Fn(Event)) -> Option<String> {
+    let fail = |m: String| { sink(Event::Error(m)); None };
+    if let Err(e) = ensure_thread(s, cwd, system) { return fail(e); }
+    let prompt = match s.intro.take() { Some(i) if !i.trim().is_empty() => format!("{i}\n\n---\n\n{prompt}"), _ => prompt.to_string() };
+    s.next_id += 1;
+    let id = s.next_id;
+    let params = json!({"sessionId": s.thread, "prompt": [{"type": "text", "text": prompt}]});
+    if !s.send(&rpc::request(id, "session/prompt", params)) { return fail(STOPPED.into()); }
+    sink(Event::Phase("Waiting for Gemini".into()));
+    let mut reply = String::new();
+    loop {
+        let Some(l) = s.line() else { return fail(STOPPED.into()) };
+        match rpc::parse(&l) {
+            rpc::Rpc::Response(r, Ok(_)) if r == id => { sink(Event::Done); return Some(reply); }
+            rpc::Rpc::Response(r, Err(m)) if r == id => return fail(m),
+            rpc::Rpc::Request(i) => {
+                let asks_permission = serde_json::from_str::<Value>(&l).is_ok_and(|v| v["method"] == "session/request_permission");
+                s.send(&if asks_permission { rpc::cancel_permission(&i) } else { rpc::decline(&i) });
+            }
+            _ => match crate::core::protocol::parse_acp_update(&l) {
+                Some(Event::Text(t)) => { reply.push_str(&t); sink(Event::Text(t)); }
+                Some(e) => sink(e),
+                None => {}
+            },
+        }
+    }
+}
 
 #[allow(clippy::too_many_arguments)]
 fn turn_codex(s: &mut Server, model: &str, effort: &str, prompt: &str, media: &[PathBuf], cwd: &Path, system: &str, sink: &dyn Fn(Event)) -> Option<String> {
@@ -410,7 +463,7 @@ pub fn run(kind: &str, model: &str, effort: &str, search: bool, memory: &str, en
     if g.is_none() {
         sink(Event::Phase(format!("Starting {}", engine_name(kind))));
         let Some(mut s) = spawn(kind, model, effort, search, memory, engine, cwd, cfg) else { return sink(Event::Error("Could not start the CLI.".into())) };
-        if kind == "codex" {
+        if kind == "codex" || kind == "gemini" {
             if let Err(e) = handshake(&mut s) { s.kill(); return sink(Event::Error(e)); }
         }
         *g = Some(s);
@@ -421,10 +474,10 @@ pub fn run(kind: &str, model: &str, effort: &str, search: bool, memory: &str, en
     let sync = in_sync(s) && (kind == "claude" || s.thread.is_some());
     // A conversation made ready by `warm` and not used yet takes the whole chat as its first message.
     if !sync && s.known.0 != 0 { s.thread = None; }
-    if kind == "codex" && s.thread.is_none() { sink(Event::Phase("Starting a conversation".into())); }
+    if kind != "claude" && s.thread.is_none() { sink(Event::Phase("Starting a conversation".into())); }
     let prompt = format!("{}{extra}", if sync { last.text.clone() } else { flatten_prompt(turns) });
     let system = system_for(search, memory);
-    let reply = if kind == "claude" { turn_claude(s, &prompt, media, sink) } else { turn_codex(s, model, effort, &prompt, media, cwd, &system, sink) };
+    let reply = if kind == "claude" { turn_claude(s, &prompt, media, sink) } else if kind == "gemini" { turn_gemini(s, &prompt, cwd, &system, sink) } else { turn_codex(s, model, effort, &prompt, media, cwd, &system, sink) };
     match reply {
         Some(text) => {
             let mut all = turns.to_vec();

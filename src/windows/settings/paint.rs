@@ -76,6 +76,7 @@ pub(super) unsafe fn paint_logo(dc: HDC, icon: Icon, f: &Fonts, rc: &RECT, color
     match icon {
         Icon::Chatgpt => app::draw_logo(dc, "codex", rc.left, cy, s(16), a.theme.muted),
         Icon::Claude => app::draw_logo(dc, "claude", rc.left, cy, s(16), 0x5777D9),
+        Icon::Gemini => app::draw_logo(dc, "gemini", rc.left, cy, s(16), 0xF48542),
         Icon::G(g) => text(dc, f.icon, g, RECT { left: rc.left - s(2), top: rc.top, right: rc.left + s(22), bottom: rc.bottom }, color, DT_CENTER | DT_VCENTER | DT_SINGLELINE),
     }
 }

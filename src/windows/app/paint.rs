@@ -94,6 +94,12 @@ pub unsafe fn draw_logo(dc: HDC, kind: &str, x: i32, cy: i32, size: i32, color: 
             MoveToEx(dc, cx - dx, cy - dy, std::ptr::null_mut());
             LineTo(dc, cx + dx, cy + dy);
         }
+    } else if kind == "gemini" {
+        // A four-pointed sparkle.
+        let q = r * 0.2;
+        let pts = [(0.0, -r), (q, -q), (r, 0.0), (q, q), (0.0, r), (-q, q), (-r, 0.0), (-q, -q), (0.0, -r)];
+        let pts: Vec<POINT> = pts.iter().map(|&(dx, dy)| POINT { x: cx + dx as i32, y: cy + dy as i32 }).collect();
+        Polyline(dc, pts.as_ptr(), pts.len() as i32);
     } else {
         for k in 0..3 {
             let rot = k as f32 * std::f32::consts::FRAC_PI_3;

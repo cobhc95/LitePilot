@@ -70,9 +70,20 @@ pub fn notification(method: &str) -> String { json!({"method": method}).to_strin
 /// Declines something the server asks for; this app never grants tools.
 pub fn decline(id: &Value) -> String { json!({"id": id, "error": {"code": -32601, "message": "not supported"}}).to_string() + "\n" }
 
+/// Answers an ACP permission request (Gemini asking to run a tool) with "cancelled": this app never grants tools.
+pub fn cancel_permission(id: &Value) -> String { json!({"id": id, "result": {"outcome": {"outcome": "cancelled"}}}).to_string() + "\n" }
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn acp_updates_and_permissions() {
+        use super::super::protocol::{parse_acp_update, Event};
+        assert_eq!(parse_acp_update(r#"{"method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Hi"}}}}"#), Some(Event::Text("Hi".into())));
+        assert_eq!(parse_acp_update(r#"{"method":"session/update","params":{"update":{"sessionUpdate":"agent_thought_chunk","content":{"text":"x"}}}}"#), Some(Event::Status("Thinking".into())));
+        assert_eq!(parse_acp_update(r#"{"method":"other"}"#), None);
+        assert!(cancel_permission(&json!(4)).contains("cancelled"));
+    }
     #[test]
     fn parses_stream_and_end() {
         assert_eq!(parse(r#"{"method":"item/agentMessage/delta","params":{"delta":"Hi"}}"#), Rpc::Text("Hi".into()));
