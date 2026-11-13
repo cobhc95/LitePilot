@@ -58,7 +58,7 @@ enum Page { Home, Subs, Login(&'static str), Api, Models, Startup, Appearance, K
 enum Icon { G(&'static str), Chatgpt, Claude, Gemini }
 
 #[derive(Clone, Copy, PartialEq)]
-enum Tog { Share, Copilot, CopilotHook, Autostart, Blur, Taskbar, Web, Wrap, Mic, OnTop, Trim, Close, Warm, TidyOn, TidyAuto, Updates }
+enum Tog { Share, Copilot, CopilotHook, Autostart, Blur, Taskbar, Web, Wrap, Mic, OnTop, Trim, Close, Warm, TidyOn, TidyAuto, Updates, Arrows }
 #[derive(Clone, Copy, PartialEq)]
 enum Pick { Theme, Palette, Font, Size, Spacing, Provider, TrimAfter, CloseAfter, MemLimit, TidyModel, MemMode }
 #[derive(Clone, Copy, PartialEq)]

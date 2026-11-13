@@ -91,6 +91,7 @@ pub struct Config {
     pub start_with_windows: bool,
     pub hide_on_blur: bool,
     pub wrap_tables: bool, // false: wide tables keep their width and the chat scrolls sideways
+    pub arrow_scroll: bool, // Up/Down scroll the chat while the typing box has no line to move through; on by default
     pub check_updates: bool, // once a day, LitePilot asks before installing a newer version
     pub share_memory: bool, // one facts list for every account (on), or a separate list per account (off)
     pub web_search: bool, // lets Claude and ChatGPT search the web (no file or command access)
@@ -151,6 +152,7 @@ impl Default for Config {
             share_memory: true,
             web_search: true,
             wrap_tables: true,
+            arrow_scroll: true,
             check_updates: true,
             on_top: true,
             theme: "system".into(),
@@ -218,6 +220,7 @@ impl Config {
             share_memory: v["share_memory"].as_bool().unwrap_or(true),
             web_search: v["web_search"].as_bool().unwrap_or(true),
             wrap_tables: v["wrap_tables"].as_bool().unwrap_or(true),
+            arrow_scroll: v["arrow_scroll"].as_bool().unwrap_or(true),
             check_updates: v["check_updates"].as_bool().unwrap_or(true),
             on_top: v["on_top"].as_bool().unwrap_or(true),
             theme: st("theme", &d.theme),
@@ -242,7 +245,7 @@ impl Config {
         })).collect();
         let v = json!({
             "active": self.active, "hotkey": self.hotkey, "copilot_key": self.copilot_key, "copilot_hook_fallback": self.copilot_hook_fallback,
-            "start_with_windows": self.start_with_windows, "hide_on_blur": self.hide_on_blur, "dictation": self.dictation, "trim_idle": self.trim_idle, "close_idle": self.close_idle, "close_idle_minutes": self.close_idle_minutes, "trim_idle_seconds": self.trim_idle_seconds, "tips_left": self.tips_left, "memory_limit": self.memory_limit, "tidy_on": self.tidy_on, "tidy_auto": self.tidy_auto, "tidy_profile": self.tidy_profile, "tidy_model": self.tidy_model, "prewarm": self.prewarm, "hide_from_taskbar": self.hide_from_taskbar, "web_search": self.web_search, "share_memory": self.share_memory, "wrap_tables": self.wrap_tables, "check_updates": self.check_updates, "on_top": self.on_top, "theme": self.theme, "font": self.font, "text_size": self.text_size,
+            "start_with_windows": self.start_with_windows, "hide_on_blur": self.hide_on_blur, "dictation": self.dictation, "trim_idle": self.trim_idle, "close_idle": self.close_idle, "close_idle_minutes": self.close_idle_minutes, "trim_idle_seconds": self.trim_idle_seconds, "tips_left": self.tips_left, "memory_limit": self.memory_limit, "tidy_on": self.tidy_on, "tidy_auto": self.tidy_auto, "tidy_profile": self.tidy_profile, "tidy_model": self.tidy_model, "prewarm": self.prewarm, "hide_from_taskbar": self.hide_from_taskbar, "web_search": self.web_search, "share_memory": self.share_memory, "wrap_tables": self.wrap_tables, "check_updates": self.check_updates, "arrow_scroll": self.arrow_scroll, "on_top": self.on_top, "theme": self.theme, "font": self.font, "text_size": self.text_size,
             "palette": self.palette, "custom_bg": self.custom[0], "custom_text": self.custom[1], "custom_accent": self.custom[2],
             "window_x": self.window_pos.map(|p| p.0), "window_y": self.window_pos.map(|p| p.1),
             "window_w": self.window_size.map(|p| p.0), "window_h": self.window_size.map(|p| p.1), "spacing": self.spacing, "chat_zoom": self.chat_zoom,

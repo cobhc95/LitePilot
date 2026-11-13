@@ -38,6 +38,7 @@ pub(super) fn toggle_meta(t: Tog) -> (&'static str, &'static str, &'static str) 
         Tog::Wrap => ("\u{E8A5}", "Wrap wide tables to fit", "Off: wide tables keep their width and the chat scrolls sideways"),
         Tog::Mic => ("\u{E720}", "Allow dictation", "Mic button and shortcut, using Windows voice typing"),
         Tog::OnTop => ("\u{E718}", "Keep on top of other windows", "Stays above other windows"),
+        Tog::Arrows => ("\u{E74B}", "Up and Down scroll the chat", "When the typing box is empty or has one line, the arrow keys scroll the chat"),
         Tog::Updates => ("\u{E896}", "Check for new versions once a day", "Asks before installing. Off: LitePilot never checks"),
         Tog::Trim => ("\u{E9D9}", "Compress its memory when idle", ""),
         Tog::Close => ("\u{E7E8}", "Close it after being idle", ""),
@@ -59,6 +60,7 @@ pub(super) fn toggle_on(t: Tog) -> bool {
         Tog::Web => c.web_search,
         Tog::Wrap => c.wrap_tables,
         Tog::Updates => c.check_updates,
+        Tog::Arrows => c.arrow_scroll,
         Tog::Mic => c.dictation,
         Tog::OnTop => c.on_top,
         Tog::Trim => c.trim_idle,
@@ -235,7 +237,7 @@ pub(super) fn rows_for(page: Page, st: &St, query: &str) -> Vec<Row> {
         }
         Page::Startup => {
             let mut v = vec![row(g("\u{E765}"), "Open shortcut", "", Kind::Field(Field::Hotkey)), hint("Press Enter, then the keys you want. Esc cancels.")];
-            for t in [Tog::Copilot, Tog::CopilotHook, Tog::Autostart, Tog::Blur, Tog::Taskbar, Tog::Web, Tog::Wrap, Tog::Mic, Tog::OnTop, Tog::Updates] {
+            for t in [Tog::Copilot, Tog::CopilotHook, Tog::Autostart, Tog::Blur, Tog::Taskbar, Tog::Web, Tog::Wrap, Tog::Mic, Tog::OnTop, Tog::Arrows, Tog::Updates] {
                 let m = toggle_meta(t);
                 // The dictation row shows whatever key it is bound to, never a fixed one.
                 let sub = if t == Tog::Mic { let k = keys::resolve(&c.keys).into_iter().find(|x| x.0 == "dictate").map_or("not set".to_string(), |x| keys::format(&x.1)); format!("Mic button and the {k} shortcut. Change it under Keyboard shortcuts") } else { m.2.to_string() };

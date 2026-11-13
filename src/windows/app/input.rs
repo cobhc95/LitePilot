@@ -252,6 +252,13 @@ pub(super) unsafe extern "system" fn child_proc(h: HWND, msg: u32, wp: WPARAM, l
         if is_input && msg == WM_KEYDOWN && ((wp as u16 == 0x56 && ctl) || (wp as u16 == VK_INSERT && shf)) && attach_win::paste() { ATE_KEY.set(true); return 0; }
         if on_key(wp as u16) { ATE_KEY.set(true); return 0; }
         ATE_KEY.set(false);
+        // In the typing box, Up/Down have nothing to move through when it is empty or holds a single line: they
+        // scroll the chat instead (a setting, on by default). Shift, Ctrl and Alt keep their usual meaning.
+        if is_input && msg == WM_KEYDOWN && !ctl && !shf && a.cfg.arrow_scroll && GetKeyState(VK_MENU as i32) >= 0 && matches!(wp as u16, VK_UP | VK_DOWN)
+            && (text_len(h) == 0 || SendMessageW(h, 0xBA, 0, 0) <= 1) { // EM_GETLINECOUNT
+            SendMessageW(a.view, WM_VSCROLL, if wp as u16 == VK_UP { SB_LINEUP } else { SB_LINEDOWN } as usize, 0);
+            return 0;
+        }
         // In the chat, plain Up/Down scroll it a line at a time instead of moving the caret through the text.
         // With Shift they still move the caret, so selecting text by keyboard works as before.
         if !is_input && msg == WM_KEYDOWN && !ctl && !shf && GetKeyState(VK_MENU as i32) >= 0 && matches!(wp as u16, VK_UP | VK_DOWN) {

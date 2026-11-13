@@ -97,6 +97,7 @@ pub(super) fn set_toggle(h: HWND, st: &mut St, t: Tog, on: bool) {
         Tog::Taskbar => { a.cfg.hide_from_taskbar = on; app::save_config(); app::apply_taskbar(); st.status = "Saved.".into(); }
         Tog::Web => { a.cfg.web_search = on; app::save_config(); st.status = "Saved.".into(); }
         Tog::Wrap => { a.cfg.wrap_tables = on; app::save_config(); app::rerender(); st.status = "Saved.".into(); }
+        Tog::Arrows => { a.cfg.arrow_scroll = on; app::save_config(); st.status = "Saved.".into(); }
         Tog::Updates => { a.cfg.check_updates = on; app::save_config(); st.status = "Saved.".into(); }
         Tog::Mic => { a.cfg.dictation = on; app::save_config(); app::relayout(); st.status = "Saved.".into(); }
         Tog::OnTop => { app::run_action("on_top"); st.status = "Saved.".into(); }

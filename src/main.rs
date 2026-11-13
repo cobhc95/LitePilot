@@ -1,4 +1,5 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
+#![recursion_limit = "256"]
 //! `core` is platform-neutral (protocols, config, history).
 //! `windows` holds everything OS-specific; other platforms add a sibling module.
 mod core;
