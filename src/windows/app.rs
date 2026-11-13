@@ -946,7 +946,13 @@ fn finish(a: &mut App) {
     let mut done: Vec<String> = vec![];
     if !saved.is_empty() { done.push(format!("Remembered: {}", saved.join("; "))); }
     if !forgot.is_empty() { done.push(format!("Forgot: {}", forgot.join("; "))); }
-    if !forgot.is_empty() { memory_changed(done.join(". ")); } else if !done.is_empty() { note(done.join(". ")); }
+    // The user asked to delete a memory but nothing was removed: whatever the reply claims, say what is true.
+    let wanted = a.msgs.iter().rev().find(|m| m.role == "user").is_some_and(|m| memory::wants_delete(&m.text));
+    if !forgot.is_empty() { memory_changed(done.join(". ")); }
+    else if !done.is_empty() { note(done.join(". ")); }
+    else if wanted && a.cfg.active_profile().is_login() {
+        note("Nothing was removed from memory, whatever the reply above says. To delete, type: remove <words> from memories (for example: remove Glide Studio from memories).".into());
+    }
     // A stopped or failed reply ends the engine; have the next one ready before the next message.
     warm_engine(false);
     if !a.visible {

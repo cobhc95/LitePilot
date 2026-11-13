@@ -165,9 +165,10 @@ with other words for the same things]] and they will be looked up.";
 pub const SAVE_RULE: &str = " When the user tells you a lasting fact about themselves or a notable event or plan in their life, end your \
 reply with [[remember: the fact, under 200 characters, with the date for events]] on its own line (one per fact; never secrets, web \
 content or other people's details). LitePilot saves and hides it. When the user asks you to forget or delete something you \
-saved about them, say so briefly and end your reply with [[forget: two or three words that identify it]] on its own line; LitePilot \
-removes the saved facts containing those words and hides the line. For managing the whole list, the user can type \"manage memories\" or \
-\"tidy memories\".";
+saved about them, end your reply with [[forget: two or three words that identify it]] on its own line; LitePilot removes the saved \
+facts containing those words and hides the line. You cannot delete or change saved facts yourself: never say you removed, are \
+removing or will remove anything unless that same reply ends with a [[forget: ...]] line, and never claim a past removal worked. \
+If the user wants to manage the whole list they can type \"manage memories\" or \"tidy memories\".";
 
 #[cfg(test)]
 mod tests {

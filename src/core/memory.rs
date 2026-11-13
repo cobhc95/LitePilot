@@ -61,12 +61,56 @@ fn forget_query(q: &str) -> Option<String> {
     (q.chars().count() >= 3).then_some(q)
 }
 
+/// Words that point at the saved memories ("from my saved memories", "in memory", "notes").
+fn names_memory(s: &str) -> bool { ["memor", "saved", "notes", "remembered"].iter().any(|w| s.contains(w)) }
+
+/// A delete request in everyday words: "remove X from memories", "can you delete X from your saved memories?",
+/// "I want you to forget about X", "delete the X memories". It must name the memories (or say "forget about"),
+/// so "delete the file from my desktop" and "forget it" are left alone. A question only counts with "can you" etc.
+fn parse_delete(text: &str) -> Option<Cmd> {
+    let question = text.trim().ends_with('?');
+    let mut s = strip_polite(text.trim().trim_end_matches('?'));
+    let mut polite = false;
+    loop {
+        let l = s.to_lowercase();
+        let Some(p) = ["please ", "pls ", "can you ", "could you ", "would you ", "will you ", "i want you to ", "i'd like you to ", "i would like you to ", "go ahead and ", "you should ", "kindly ", "just ", "now "].iter().find(|p| l.starts_with(*p)) else { break };
+        polite |= p.ends_with("you ") || p.contains("you to");
+        s = s[p.len()..].trim().to_string();
+    }
+    if question && !polite { return None; }
+    let l = s.to_lowercase();
+    let verb = ["remove ", "delete ", "erase ", "drop ", "clear ", "wipe ", "get rid of ", "forget about ", "forget "].into_iter().find(|v| l.starts_with(*v))?;
+    let body = s[verb.len()..].trim();
+    let bl = body.to_lowercase();
+    // "X from (my / your / the) (saved) memories": the memories are named after the last " from ".
+    if let Some(i) = bl.rfind(" from ").filter(|i| names_memory(&bl[i + 6..])) {
+        return forget_query(&body[..i]).map(Cmd::Forget);
+    }
+    // "X in memory", "memories about X", "X memories".
+    for tail in [" in my memory", " in memory", " in my memories", " in memories", " memories", " memory", " entries", " facts"] {
+        if bl.ends_with(tail) && body.is_char_boundary(body.len() - tail.len()) { return forget_query(&body[..body.len() - tail.len()]).map(Cmd::Forget); }
+    }
+    if let Some(rest) = ["the memories about ", "memories about ", "my memories about ", "saved memories about "].iter().find(|p| bl.starts_with(*p)) { return forget_query(&body[rest.len()..]).map(Cmd::Forget); }
+    // "forget about X" needs no mention of memory; plain "forget X" does.
+    if verb == "forget about " { return forget_query(body).map(Cmd::Forget); }
+    None
+}
+
+/// The user's message asks for a memory to be deleted (a delete word and a word about memories), even if it
+/// couldn't be turned into a command. Used to say so when nothing was removed.
+pub fn wants_delete(text: &str) -> bool {
+    let l = text.to_lowercase();
+    ["remove", "delete", "erase", "forget", "wipe", "get rid of", "clear"].iter().any(|w| l.contains(w)) && names_memory(&l)
+}
+
 /// "remember that X", "remember: X", "forget that X", "forget about X", "forget: X", "remove X from memories",
 /// "delete all memories", "manage memories", "tidy memories". Only a whole message and never a question, so
 /// "remember that film we watched?" still goes to the model.
 pub fn parse_command(text: &str) -> Option<Cmd> {
     let t = text.trim();
-    if t.contains('\n') || t.ends_with('?') { return None; }
+    if t.contains('\n') { return None; }
+    if let Some(c) = parse_delete(t) { return Some(c); }
+    if t.ends_with('?') { return None; }
     let lower = t.to_lowercase();
     // Opening the lists, and wiping everything, in the ways people ask for them.
     let s = strip_polite(t);
@@ -77,19 +121,6 @@ pub fn parse_command(text: &str) -> Option<Cmd> {
         | "organize my memories" | "organise memory" | "organize memory" | "clean up memories" | "clean up my memories" | "sort memories" | "sort my memories" | "merge memories") { return Some(Cmd::Tidy); }
     if matches!(sl.as_str(), "clear memory" | "clear memories" | "clear my memories" | "clear all memories" | "delete all memories" | "delete all my memories" | "delete my memories" | "delete memories"
         | "erase all memories" | "erase my memories" | "wipe memory" | "wipe my memory" | "wipe memories" | "wipe my memories" | "remove all memories" | "remove all my memories") { return Some(Cmd::Forget(String::new())); }
-    // "remove X from memories", "delete X from my memory", "erase X from saved memories".
-    for verb in ["remove ", "delete ", "erase ", "drop ", "clear ", "wipe "] {
-        if !sl.starts_with(verb) { continue; }
-        let body = s[verb.len()..].trim();
-        let bl = body.to_lowercase();
-        for tail in [" from my saved memories", " from my saved memory", " from saved memories", " from saved memory", " from my memories", " from my memory", " from your memories", " from your memory",
-            " from the memories", " from the memory", " from memories", " from memory", " from my notes"] {
-            if bl.ends_with(tail) && body.is_char_boundary(body.len() - tail.len()) {
-                return forget_query(&body[..body.len() - tail.len()]).map(Cmd::Forget);
-            }
-        }
-    }
-    if let Some(q) = ["forget about "].iter().find(|p| sl.starts_with(*p)).and_then(|p| forget_query(&s[p.len()..])) { return Some(Cmd::Forget(q)); }
     let rest = |prefixes: &[&str]| prefixes.iter().find(|p| lower.starts_with(*p)).map(|p| t[p.len()..].trim().trim_end_matches('.').trim().to_string());
     if let Some(r) = rest(&["remember that ", "remember:", "please remember that ", "please remember:"]) {
         return (!r.is_empty()).then_some(Cmd::Remember(r));
@@ -545,7 +576,16 @@ mod tests {
         assert_eq!(parse_command("Organise memories please"), Some(Cmd::Tidy));
         assert_eq!(parse_command("remove it from memory"), None);
         assert_eq!(parse_command("delete the file from my desktop"), None);
-        assert_eq!(parse_command("can you remove glide studio from memory?"), None);
+        assert_eq!(parse_command("can you remove glide studio from memory?"), Some(Cmd::Forget("glide studio".into())));
+        assert_eq!(parse_command("remove glide studio from your saved memories"), Some(Cmd::Forget("glide studio".into())));
+        assert_eq!(parse_command("Could you please delete Glide Studio from my saved memories?"), Some(Cmd::Forget("Glide Studio".into())));
+        assert_eq!(parse_command("I want you to forget about glide studio"), Some(Cmd::Forget("glide studio".into())));
+        assert_eq!(parse_command("delete the glide studio memories"), Some(Cmd::Forget("glide studio".into())));
+        assert_eq!(parse_command("forget glide studio from memory"), Some(Cmd::Forget("glide studio".into())));
+        assert_eq!(parse_command("remove glide studio from memories?"), None);
+        assert_eq!(parse_command("can you forget it?"), None);
+        assert_eq!(parse_command("is it done now?"), None);
+        assert!(wants_delete("please remove it from my saved memories") && !wants_delete("can you double check"));
         assert_eq!(parse_command("remember that a\nand b"), None);
     }
     #[test]
