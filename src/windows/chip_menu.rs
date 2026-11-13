@@ -95,13 +95,22 @@ fn describe(slug: &str, name: &str) -> (String, &'static str) {
     (label, hint)
 }
 
-enum Ic { Glyph(&'static str), Earth, Leaf, Notes, Crown }
+enum Ic { Glyph(&'static str), Logo(&'static str), Earth, Leaf, Notes, Crown }
 
 /// The menu icon and color for a model: moon (Luna), Earth (Terra), sun (Sol), star (Astra),
-/// leaf (Haiku), notes (Sonnet), crown (Opus). Anything else is a muted clock; Default is gears.
-fn icon(label: &str, muted: u32) -> (Ic, u32) {
+/// leaf (Haiku), notes (Sonnet), crown (Opus). Models Antigravity serves carry their maker's mark: the Gemini
+/// sparkle (in one of Gemini's three brand colors, so each model is easy to tell apart), Claude's spark, OpenAI's
+/// knot; the orchestrator gets a linked-nodes glyph. Anything else is a muted clock; Default is gears.
+fn icon(label: &str, slug: &str, muted: u32) -> (Ic, u32) {
     let l = label.to_lowercase();
+    let s = slug.to_lowercase();
+    // Gemini's blue, purple and coral (as 0xBBGGRR), picked by a fixed hash of the id so a model keeps its color.
+    let gem = [0xF48542, 0xCB729B, 0x7065D9][s.bytes().fold(0usize, |h, b| h.wrapping_mul(31).wrapping_add(b as usize)) % 3];
     if l == "default" { (Ic::Glyph("\u{E9F5}"), muted) }
+    else if s.contains("orchestrator") { (Ic::Glyph("\u{E902}"), gem) }
+    else if s.starts_with("gemini-") { (Ic::Logo("gemini"), gem) }
+    else if s.starts_with("claude-") { (Ic::Logo("claude"), 0x5777D9) }
+    else if s.starts_with("gpt-oss") { (Ic::Logo("codex"), muted) }
     else if l.contains("luna") { (Ic::Glyph("\u{E708}"), 0x3DD3FF) }
     else if l.contains("terra") { (Ic::Earth, 0xEB6F1F) }
     else if l.contains("sol") { (Ic::Glyph("\u{E706}"), 0x24A5F5) }
@@ -150,6 +159,7 @@ unsafe fn draw_custom(dc: HDC, ic: &Ic, x: i32, y: i32, color: u32) {
             poly(dc, &[(2, 14), (1, 5), (6, 9), (9, 3), (12, 9), (17, 5), (16, 14)]);
             poly(dc, &[(2, 15), (16, 15), (16, 17), (2, 17)]);
         }),
+        Ic::Logo(kind) => app::draw_logo(dc, kind, x + s(1), y + s(9), s(16), color),
         Ic::Glyph(_) => {}
     }
 }
@@ -678,7 +688,7 @@ unsafe fn paint(h: HWND, dc: HDC, m: &Menu) {
                 // Older generations are dimmed: icon and name blended halfway toward the background.
                 let older = m.is_older(i);
                 let fade = |c: u32| if older { mix(c, a.theme.bg, 45) } else { c };
-                match icon(name, a.theme.muted) {
+                match icon(name, slug, a.theme.muted) {
                     (Ic::Glyph(g), c) => glyph(g, fade(c)),
                     (ic, c) => draw_custom(dc, &ic, lx, (r.top + r.bottom) / 2 - s(9), fade(c)),
                 }
