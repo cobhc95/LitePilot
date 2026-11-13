@@ -222,6 +222,12 @@ pub fn warm(kind: &str, mode: &str, search_allowed: bool, mem_dir: &Path) -> Str
     standing(search_allowed && kind != "gemini", false, mode != "off")
 }
 
+/// The standing lines of a message that turns search on, for the spare engine kept ready for it; none where search
+/// isn't allowed (and never for Gemini, which searches by itself).
+pub fn warm_search(kind: &str, mode: &str, search_allowed: bool) -> Option<String> {
+    (search_allowed && kind != "gemini").then(|| standing(true, true, mode != "off"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -246,7 +252,7 @@ mod tests {
         // LITEPILOT_E2E_NOTRIM: leave the engine's memory alone while it idles (the app squeezes it after 5 s).
         if std::env::var("LITEPILOT_E2E_NOTRIM").is_ok() { cli::configure(false, 5, false, 5); }
         let standing = warm(&kind, "engine", true, &mem);
-        cli::warm(&kind, model, effort, false, &standing, true, &cwd, false);
+        cli::warm(&kind, model, effort, false, &standing, true, &cwd, false, None);
         std::thread::sleep(std::time::Duration::from_secs(6));
         let mut msgs: Vec<Msg> = vec![];
         // LITEPILOT_E2E_MSGS: the messages to send, separated by '|'.

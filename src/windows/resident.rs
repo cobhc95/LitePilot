@@ -53,12 +53,16 @@ struct Server {
 unsafe impl Send for Server {}
 
 static SERVER: Mutex<Option<Server>> = Mutex::new(None);
+/// A second, empty process kept ready with web search on (Claude and ChatGPT): when a message needs search the
+/// CLI would otherwise be restarted, which costs 0.5 to 2 s; this one is put to work at once instead. Lock order:
+/// SERVER, then SPARE.
+static SPARE: Mutex<Option<Server>> = Mutex::new(None);
 /// The live job, so Stop can end it while a reply is being read.
 static JOB: AtomicIsize = AtomicIsize::new(0);
 
 impl Server {
     fn kill(mut self) {
-        JOB.store(0, Ordering::SeqCst);
+        let _ = JOB.compare_exchange(self.job as isize, 0, Ordering::SeqCst, Ordering::SeqCst);
         unsafe { TerminateJobObject(self.job, 1); CloseHandle(self.job); }
         let _ = self.child.kill();
         let _ = self.child.wait();
@@ -114,13 +118,17 @@ fn start_reaper() {
     if RUNNING.swap(true, Ordering::SeqCst) { return; }
     std::thread::spawn(|| loop {
         std::thread::sleep(Duration::from_secs(2));
-        let Ok(mut g) = SERVER.try_lock() else { continue }; // a reply is in progress
-        match g.as_mut() {
-            None => { RUNNING.store(false, Ordering::SeqCst); return; }
-            Some(s) if idle_kill().is_some_and(|d| s.last.elapsed() >= d) => { if let Some(s) = g.take() { s.kill(); } }
-            Some(s) if TRIM.load(Ordering::SeqCst) && s.last.elapsed() >= Duration::from_secs(TRIM_AFTER.load(Ordering::SeqCst)) && !s.trimmed => { s.trimmed = true; trim(s.job); }
-            Some(_) => {}
+        let mut any = false;
+        for slot in [&SERVER, &SPARE] {
+            let Ok(mut g) = slot.try_lock() else { any = true; continue }; // a reply is in progress
+            match g.as_mut() {
+                None => {}
+                Some(s) if idle_kill().is_some_and(|d| s.last.elapsed() >= d) => { if let Some(s) = g.take() { s.kill(); } }
+                Some(s) if TRIM.load(Ordering::SeqCst) && s.last.elapsed() >= Duration::from_secs(TRIM_AFTER.load(Ordering::SeqCst)) && !s.trimmed => { s.trimmed = true; trim(s.job); any = true; }
+                Some(_) => any = true,
+            }
         }
+        if !any { RUNNING.store(false, Ordering::SeqCst); return; }
     });
 }
 
@@ -151,7 +159,9 @@ fn diag_tools() -> Option<String> {
 fn self_exe() -> String { super::util::exe_path().to_string_lossy().replace('\\', "/") }
 
 #[allow(clippy::too_many_arguments)]
-fn spawn(kind: &str, model: &str, effort: &str, search: bool, memory: &str, engine: bool, cwd: &Path, cfg: String) -> Option<Server> {
+fn spawn(kind: &str, model: &str, effort: &str, search: bool, memory: &str, engine: bool, cwd: &Path, cfg: String, pure: bool) -> Option<Server> {
+    // `pure`: a spare, started for a plain search message whatever the globals hold now (no PC tools, no memory tool).
+    let (diag, memtool) = if pure { (None, None) } else { (diag_tools(), memory_tool()) };
     let mut c = super::cli::command(kind)?;
     c.current_dir(cwd).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
     if kind == "claude" {
@@ -171,17 +181,17 @@ fn spawn(kind: &str, model: &str, effort: &str, search: bool, memory: &str, engi
         let mut allowed: Vec<String> = if search { vec!["WebSearch".into(), "WebFetch".into()] } else { vec![] };
         // The diagnostic tools this message needs (see diag.rs), plus the facts lookup when memory is on.
         let mut servers = serde_json::Map::new();
-        if let Some(cats) = diag_tools() {
+        if let Some(cats) = diag.clone() {
             servers.insert(super::diag::SERVER.into(), json!({"command": self_exe(), "args": ["--system-mcp", cats]}));
             allowed.push(format!("mcp__{}", super::diag::SERVER));
         }
-        if let Some((exe, dir)) = memory_tool() {
+        if let Some((exe, dir)) = memtool.clone() {
             servers.insert(crate::core::mcp::SERVER.into(), json!({"command": exe, "args": ["--memory-mcp", dir]}));
             allowed.push(format!("mcp__{}", crate::core::mcp::SERVER));
         }
         if !servers.is_empty() { c.args(["--mcp-config", &json!({"mcpServers": servers}).to_string()]); }
         if !allowed.is_empty() { c.args(["--allowedTools", &allowed.join(","), "--permission-prompts", "none"]); }
-        let system = system_for(search, memory);
+        let system = system_with(search, memory, diag.is_some());
         c.args(["--no-session-persistence", "--strict-mcp-config", "--setting-sources", "", "--disable-slash-commands", "--system-prompt", &system]);
         if !model.is_empty() { c.args(["--model", model]); }
         // Low effort runs without thinking (set above); the effort flag would turn adaptive thinking back on.
@@ -202,13 +212,13 @@ fn spawn(kind: &str, model: &str, effort: &str, search: bool, memory: &str, engi
         for k in ["include_permissions_instructions=false", "include_environment_context=false", "include_apps_instructions=false", "project_doc_max_bytes=0"] {
             c.args(["-c", k]);
         }
-        if let Some((exe, dir)) = memory_tool() {
+        if let Some((exe, dir)) = memtool {
             let n = crate::core::mcp::SERVER;
             c.arg("-c").arg(format!("mcp_servers.{n}.command=\"{exe}\""));
             c.arg("-c").arg(format!("mcp_servers.{n}.args=[\"--memory-mcp\",\"{dir}\"]"));
             c.arg("-c").arg(format!("mcp_servers.{n}.default_tools_approval_mode=\"approve\""));
         }
-        if let Some(cats) = diag_tools() {
+        if let Some(cats) = diag {
             let n = super::diag::SERVER;
             c.arg("-c").arg(format!("mcp_servers.{n}.command=\"{}\"", self_exe()));
             c.arg("-c").arg(format!("mcp_servers.{n}.args=[\"--system-mcp\",\"{cats}\"]"));
@@ -227,7 +237,6 @@ fn spawn(kind: &str, model: &str, effort: &str, search: bool, memory: &str, engi
     let mut child = c.spawn().ok()?;
     let (stdin, stdout) = (child.stdin.take()?, child.stdout.take()?);
     let job = super::util::job_for(&child);
-    JOB.store(job as isize, Ordering::SeqCst);
     Some(Server { child, stdin, out: BufReader::new(stdout), job, kind: kind.into(), cfg, thread: None, known: (0, rpc::hash(&[])), last: Instant::now(), trimmed: false, next_id: 0, engine, model: if kind == "gemini" { super::cli::gemini_resolve(model, effort) } else { model.to_string() }, intro: None })
 }
 
@@ -329,8 +338,11 @@ fn ensure_thread(s: &mut Server, cwd: &Path, system: &str) -> Result<(), String>
 
 /// What the process or conversation was set up with. The memory is in the standing instructions, so an edit
 /// to it means a fresh conversation (Codex) or process (Claude).
-fn cfg_key(kind: &str, model: &str, effort: &str, search: bool, memory: &str, engine: bool) -> String {
-    let m = crate::core::memory::hash(&format!("{memory}{:?}{:?}", MEMTOOL.lock().unwrap_or_else(|e| e.into_inner()), diag_tools()));
+fn cfg_key(kind: &str, model: &str, effort: &str, search: bool, memory: &str, engine: bool) -> String { cfg_key_with(kind, model, effort, search, memory, engine, false) }
+
+fn cfg_key_with(kind: &str, model: &str, effort: &str, search: bool, memory: &str, engine: bool, pure: bool) -> String {
+    let m = if pure { crate::core::memory::hash(&format!("{memory}{:?}{:?}", None::<String>, None::<String>)) }
+        else { crate::core::memory::hash(&format!("{memory}{:?}{:?}", MEMTOOL.lock().unwrap_or_else(|e| e.into_inner()), diag_tools())) };
     // Gemini keeps one process for good: the model and effort are changed inside the running conversation
     // (see turn_gemini), and nothing else about a message changes how it runs.
     if kind == "gemini" { String::new() }
@@ -344,14 +356,19 @@ pub fn claude_memory_dir(cwd: &Path) -> PathBuf {
 
 /// Ends the resident CLI if it is idle, so it starts again with fresh memory. Does nothing during a reply.
 pub fn reset() {
-    if let Ok(mut g) = SERVER.try_lock() { if let Some(s) = g.take() { s.kill(); } }
+    if let Ok(mut g) = SERVER.try_lock() {
+        if let Some(s) = g.take() { s.kill(); }
+        if let Ok(mut sp) = SPARE.try_lock() { if let Some(s) = sp.take() { s.kill(); } }
+    }
 }
 
 /// The standing instructions: the short core, the search line while search is on, the tool note while diagnostic
 /// tools are on, and `standing` (the escalation lines; see core::need). Saved facts never go here.
-fn system_for(search: bool, standing: &str) -> String {
+fn system_for(search: bool, standing: &str) -> String { system_with(search, standing, diag_tools().is_some()) }
+
+fn system_with(search: bool, standing: &str, diag: bool) -> String {
     let base = if search { format!("{}{}", super::cli::SYSTEM, super::cli::SEARCH) } else { super::cli::SYSTEM.to_string() };
-    let tools = if diag_tools().is_some() { crate::core::diag::SYSTEM_NOTE } else { "" };
+    let tools = if diag { crate::core::diag::SYSTEM_NOTE } else { "" };
     base + tools + standing
 }
 
@@ -360,8 +377,9 @@ fn system_for(search: bool, standing: &str) -> String {
 /// It never throws away a conversation in progress: a running CLI that holds one is left alone, unless `fresh`
 /// (a new or different chat was opened), when a clean one is made ready for it. Does nothing during a reply.
 #[allow(clippy::too_many_arguments)]
-pub fn warm(kind: &str, model: &str, effort: &str, search: bool, memory: &str, engine: bool, cwd: &Path, fresh: bool) {
+pub fn warm(kind: &str, model: &str, effort: &str, search: bool, memory: &str, engine: bool, cwd: &Path, fresh: bool, spare_standing: Option<String>) {
     if super::cli::find(kind).is_none() { return; }
+    if let (false, Some(st)) = (search, spare_standing) { ensure_spare(kind, model, effort, st, engine, cwd); }
     let (kind, model, effort, memory, cwd) = (kind.to_string(), model.to_string(), effort.to_string(), memory.to_string(), cwd.to_path_buf());
     std::thread::spawn(move || {
         let Ok(mut g) = SERVER.try_lock() else { return };
@@ -380,11 +398,48 @@ pub fn warm(kind: &str, model: &str, effort: &str, search: bool, memory: &str, e
             }
         }
         if let Some(s) = g.take() { s.kill(); }
-        let Some(mut s) = spawn(&kind, &model, &effort, search, &memory, engine, &cwd, cfg) else { return };
+        let Some(mut s) = spawn(&kind, &model, &effort, search, &memory, engine, &cwd, cfg, false) else { return };
         if (kind == "codex" || kind == "gemini") && (handshake(&mut s).is_err() || ensure_thread(&mut s, &cwd, &system_for(search, &memory)).is_err()) { s.kill(); return; }
+        JOB.store(s.job as isize, Ordering::SeqCst);
         *g = Some(s);
         start_reaper();
     });
+}
+
+/// Keeps the spare ready (Claude and ChatGPT only): built in the background, never while a reply is running,
+/// replaced when its settings (the saved facts among them) no longer match what a search message would use.
+fn ensure_spare(kind: &str, model: &str, effort: &str, standing: String, engine: bool, cwd: &Path) {
+    if kind != "claude" && kind != "codex" { return; }
+    static BUILDING: AtomicBool = AtomicBool::new(false);
+    if BUILDING.swap(true, Ordering::SeqCst) { return; }
+    let (kind, model, effort, cwd) = (kind.to_string(), model.to_string(), effort.to_string(), cwd.to_path_buf());
+    std::thread::spawn(move || {
+        build_spare(&kind, &model, &effort, &standing, engine, &cwd);
+        BUILDING.store(false, Ordering::SeqCst);
+    });
+}
+
+fn build_spare(kind: &str, model: &str, effort: &str, standing: &str, engine: bool, cwd: &Path) {
+    let want = cfg_key_with(kind, model, effort, true, standing, engine, true);
+    {
+        // Nothing to add while the main process already runs with search on.
+        let Ok(main) = SERVER.try_lock() else { return };
+        if main.as_ref().is_some_and(|s| s.kind == kind && s.cfg == want) { return; }
+    }
+    {
+        let Ok(mut sp) = SPARE.try_lock() else { return };
+        match sp.as_ref() {
+            Some(s) if s.kind == kind && s.cfg == want => return,
+            Some(_) => { if let Some(s) = sp.take() { s.kill(); } }
+            None => {}
+        }
+    }
+    let Some(mut s) = spawn(kind, model, effort, true, standing, engine, cwd, want, true) else { return };
+    if kind == "codex" && (handshake(&mut s).is_err() || ensure_thread(&mut s, cwd, &system_with(true, standing, false)).is_err()) { s.kill(); return; }
+    match SPARE.try_lock() {
+        Ok(mut sp) if sp.is_none() => { *sp = Some(s); start_reaper(); }
+        _ => s.kill(),
+    }
 }
 
 fn engine_name(kind: &str) -> &'static str { match kind { "claude" => "Claude", "gemini" => "Gemini", _ => "ChatGPT" } }
@@ -478,13 +533,20 @@ pub fn run(kind: &str, model: &str, effort: &str, search: bool, memory: &str, en
     let in_sync = |s: &Server| s.known == (prev.len(), rpc::hash(prev));
     // Claude can't forget a conversation, so anything out of step starts a fresh process.
     let stale = g.as_ref().is_some_and(|s| s.kind != kind || s.cfg != cfg || (kind == "claude" && !in_sync(s) && s.known.0 != 0));
-    if stale { if let Some(s) = g.take() { s.kill(); } }
+    if stale {
+        // A ready spare with exactly the settings this message needs takes over from the old process at once.
+        let old = g.take();
+        let spare = SPARE.try_lock().ok().and_then(|mut sp| if sp.as_ref().is_some_and(|s| s.kind == kind && s.cfg == cfg) { sp.take() } else { None });
+        if let Some(o) = old { o.kill(); }
+        if let Some(s) = spare { JOB.store(s.job as isize, Ordering::SeqCst); *g = Some(s); }
+    }
     if g.is_none() {
         sink(Event::Phase(format!("Starting {}", engine_name(kind))));
-        let Some(mut s) = spawn(kind, model, effort, search, memory, engine, cwd, cfg) else { return sink(Event::Error("Could not start the CLI.".into())) };
+        let Some(mut s) = spawn(kind, model, effort, search, memory, engine, cwd, cfg, false) else { return sink(Event::Error("Could not start the CLI.".into())) };
         if kind == "codex" || kind == "gemini" {
             if let Err(e) = handshake(&mut s) { s.kill(); return sink(Event::Error(e)); }
         }
+        JOB.store(s.job as isize, Ordering::SeqCst);
         *g = Some(s);
         start_reaper();
     }

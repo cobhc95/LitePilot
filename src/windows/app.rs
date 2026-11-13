@@ -736,7 +736,7 @@ pub fn warm_engine(fresh: bool) {
     memory_store::adopt_claude_memory(&a.data, &mem_dir());
     // Warmed exactly as a fresh chat's first ordinary message will need it: no tools, no facts.
     let standing = super::turn_plan::warm(&p.kind, mode, a.cfg.web_search, &mem_dir());
-    cli::warm(&p.kind, &p.model, &p.effort, false, &standing, mode == "engine", &cwd, fresh);
+    cli::warm(&p.kind, &p.model, &p.effort, false, &standing, mode == "engine", &cwd, fresh, super::turn_plan::warm_search(&p.kind, mode, a.cfg.web_search));
 }
 
 /// A window focus can be handed back to: another program's visible, normal (not minimized) top-level window,
