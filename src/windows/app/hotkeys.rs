@@ -171,7 +171,7 @@ pub(super) fn on_key(vk: u16) -> bool {
         }
     }
     match vk {
-        VK_ESCAPE => { if a.streaming { stop(); } else { hide(); } }
+        VK_ESCAPE => hide(), // a reply keeps being written while hidden; the send button (or the Stop key) stops it
         VK_TAB if !ctrl && !alt => unsafe {
             if GetFocus() == a.input { focus_chat_at_question(a.view); } else { SetFocus(a.input); }
         },

@@ -233,11 +233,26 @@ pub fn parse_claude_line(line: &str) -> Option<Event> {
 /// Turns to send: drops a user message whose reply failed, so roles keep alternating
 /// (some providers reject two user messages in a row).
 pub fn request_turns(msgs: &[Msg]) -> Vec<Msg> {
-    let turns: Vec<&Msg> = msgs.iter().filter(|m| m.role == "user" || m.role == "assistant").collect();
-    turns.iter().enumerate()
-        .filter(|(i, m)| !(m.role == "user" && turns.get(i + 1).is_some_and(|n| n.role == "user")))
-        .map(|(_, m)| (*m).clone())
-        .collect()
+    // A message that failed (an error follows it) is dropped. One that was only stopped before any answer came
+    // stays: it is joined to the next message, so the model still sees the question it never answered.
+    let mut out: Vec<Msg> = Vec::new();
+    let mut failed = false;
+    for (i, m) in msgs.iter().enumerate() {
+        match m.role.as_str() {
+            "user" => {
+                failed = msgs.get(i + 1).is_some_and(|n| n.role == "error");
+                if !failed {
+                    match out.last_mut() {
+                        Some(p) if p.role == "user" => p.text = format!("{}\n\n{}", p.text, m.text),
+                        _ => out.push(m.clone()),
+                    }
+                }
+            }
+            "assistant" if !failed && !m.text.trim().is_empty() => out.push(m.clone()),
+            _ => {}
+        }
+    }
+    out
 }
 
 /// The CLIs take one prompt, so earlier turns are flattened into it.
@@ -323,6 +338,11 @@ mod tests {
     fn failed_turn_is_dropped() {
         let m = [Msg::new("user", "bad"), Msg::new("error", "e"), Msg::new("user", "good")];
         assert_eq!(request_turns(&m), vec![Msg::new("user", "good")]);
+    }
+    #[test]
+    fn stopped_question_is_kept_with_the_next() {
+        let m = [Msg::new("user", "toothbrushes?"), Msg::new("assistant", ""), Msg::new("user", "?")];
+        assert_eq!(request_turns(&m), vec![Msg::new("user", "toothbrushes?\n\n?")]);
     }
     #[test]
     fn request_urls_and_auth() {
