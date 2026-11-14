@@ -78,6 +78,7 @@ pub(super) unsafe extern "system" fn wndproc(h: HWND, msg: u32, wp: WPARAM, lp: 
                 if crate::windows::updater::on_tick(a.visible, &mut a.cfg) { save_config(); }
             }
             if wp == key_badges::TIMER { key_badges::show(); }
+            if wp == ID_ZOOMED { KillTimer(h, ID_ZOOMED); apply_zoom(); }
             if wp == ID_RESIZED {
                 KillTimer(h, ID_RESIZED);
                 let a = app();

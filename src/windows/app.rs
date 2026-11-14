@@ -47,6 +47,7 @@ const ID_COPIED: usize = 2;
 const ID_BLINK: usize = 3;
 const ID_UPDATE: usize = 4;
 const ID_RESIZED: usize = 5;
+const ID_ZOOMED: usize = 6;
 
 /// Runs the update tick soon from the message loop, never from inside another window's handler.
 pub fn update_tick_soon() { unsafe { PostMessageW(app().hwnd, WM_TIMER, ID_UPDATE, 0); } }
@@ -185,6 +186,14 @@ pub fn set_chat_zoom(pct: u32) {
     let pct = pct.clamp(50, 300);
     if pct == a.cfg.chat_zoom { return; }
     a.cfg.chat_zoom = pct;
+    // The heavy part (laying the whole chat out again and saving the setting) waits until the wheel or key stops,
+    // so a run of zoom steps costs one pass and the window never stalls long enough for Windows to show its busy pointer.
+    unsafe { SetTimer(a.hwnd, ID_ZOOMED, 90, None); }
+}
+
+/// Runs once the zoom has settled.
+fn apply_zoom() {
+    let a = app();
     rerender();
     unsafe { InvalidateRect(a.view, std::ptr::null(), 1); }
     save_config();
