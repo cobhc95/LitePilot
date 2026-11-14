@@ -7,18 +7,28 @@ pub(super) const RIGHT_PAD: i32 = 31;
 thread_local! {
     /// While the scroll bar thumb is dragged: (mouse y at the start, scroll position at the start).
     pub(super) static SB_DRAG: Cell<Option<(i32, i32)>> = const { Cell::new(None) };
+    /// What the thumb is sized against while you scroll: (chat key, scrollable height), and when the chat last moved.
+    static THUMB_MAX: Cell<(i64, i32)> = const { Cell::new((-1, 0)) };
+    static LAST_MOVE: Cell<Option<std::time::Instant>> = const { Cell::new(None) };
 }
 
 /// The chat's own slim scroll bar (the system one can't take the theme's colors): the thumb and the strip it
 /// moves in. None when everything fits.
 pub(super) unsafe fn scrollbar(h: HWND) -> Option<(RECT, RECT)> {
-    let max = max_scroll(h);
-    if max <= 0 { return None; }
+    let real = max_scroll(h);
+    if real <= 0 { return None; }
     let (pos, _, page) = scroll_range(h);
     let dpi = GetDpiForWindow(h).max(96) as i32;
     let s = |v: i32| v * dpi / 96;
     let mut rc: RECT = std::mem::zeroed();
     GetClientRect(h, &mut rc);
+    // The text control only estimates the height of what it hasn't laid out yet, and the estimate shifts as you
+    // scroll, which made the thumb jitter. While the chat is moving the thumb keeps the height it had; it takes the
+    // fresh figure whenever the chat itself (its text, size or zoom) changes or has been still for a moment.
+    let key = text_len(h) as i64 ^ ((rc.right as i64) << 20) ^ ((rc.bottom as i64) << 36) ^ ((app().cfg.chat_zoom as i64) << 52);
+    let (ck, cm) = THUMB_MAX.get();
+    let moving = LAST_MOVE.get().is_some_and(|t| t.elapsed() < std::time::Duration::from_millis(400));
+    let max = if ck == key && moving && cm >= pos && cm > 0 { cm } else { THUMB_MAX.set((key, real)); real };
     let track = RECT { left: rc.right - s(12), top: s(6), right: rc.right - s(4), bottom: rc.bottom - s(6) };
     let th = (page * (track.bottom - track.top) / (max + page)).max(s(32)).min(track.bottom - track.top);
     let y = track.top + (pos.clamp(0, max) as i64 * (track.bottom - track.top - th) as i64 / max as i64) as i32;
@@ -121,6 +131,16 @@ pub(super) unsafe fn line_px(h: HWND) -> i32 {
     (22 * GetDpiForWindow(h).max(96) as i32 / 96 * app().cfg.chat_zoom as i32 / 100).max(8)
 }
 
+/// The chat's text control switches the pointer to Windows' busy shape (arrow with a ring) while it lays text out in
+/// the background, which shows up as the pointer "loading" while you scroll. That is never wanted here: put the
+/// ordinary text pointer back whenever it is showing.
+pub(super) unsafe fn keep_pointer_normal() {
+    let c = GetCursor();
+    if c == LoadCursorW(std::ptr::null_mut(), IDC_APPSTARTING) || c == LoadCursorW(std::ptr::null_mut(), IDC_WAIT) {
+        SetCursor(LoadCursorW(std::ptr::null_mut(), IDC_IBEAM));
+    }
+}
+
 /// Moves the chat to `y` pixels from the top (clamped) at once and repaints the whole view.
 pub(super) unsafe fn scroll_to(h: HWND, y: i32) {
     let (pos, _, _) = scroll_range(h);
@@ -129,9 +149,11 @@ pub(super) unsafe fn scroll_to(h: HWND, y: i32) {
     if y == pos { return; }
     let mut pt = POINT { x: 0, y };
     SendMessageW(h, 0x0400 + 222, 0, &mut pt as *mut POINT as isize); // EM_SETSCROLLPOS
+    LAST_MOVE.set(Some(std::time::Instant::now()));
     // Marked for repainting, not painted on the spot: wheel and drag events that arrive faster than a frame can
     // be drawn then share one repaint instead of each forcing its own.
     InvalidateRect(h, std::ptr::null(), 0);
+    keep_pointer_normal();
 }
 
 pub(super) unsafe fn scroll_by(h: HWND, dy: i32) {

@@ -102,6 +102,7 @@ pub(super) unsafe extern "system" fn child_proc(h: HWND, msg: u32, wp: WPARAM, l
         bubbles::begin(mem);
         bubbles::paint(h, a.theme.bg, rtf::cell_shade(a.theme.bubble));
         images::paint(h, pic_colors(a));
+        keep_pointer_normal();
         scrollbar_paint(h, mem);
         stat_paint(h);
         status_paint(h);
@@ -211,6 +212,10 @@ pub(super) unsafe extern "system" fn child_proc(h: HWND, msg: u32, wp: WPARAM, l
             SetCursor(LoadCursorW(std::ptr::null_mut(), IDC_HAND));
             return 1;
         }
+        // Anything else is the text control's call (I-beam, or a hand over a link), except its busy pointer.
+        let r = CallWindowProcW(std::mem::transmute::<isize, WNDPROC>(a.old_view), h, msg, wp, lp);
+        keep_pointer_normal();
+        return r;
     }
     // Holding Alt is watched by alt_hook; losing focus hides the labels.
     if msg == WM_KILLFOCUS { key_badges::stop(); }
