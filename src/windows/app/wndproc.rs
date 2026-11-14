@@ -81,6 +81,7 @@ pub(super) unsafe extern "system" fn wndproc(h: HWND, msg: u32, wp: WPARAM, lp: 
             if wp == ID_COPIED {
                 KillTimer(h, ID_COPIED);
                 update_header();
+                if COPY_DONE.get() { COPY_DONE.set(false); InvalidateRect(app().view, std::ptr::null(), 0); }
             }
             0
         }

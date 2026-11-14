@@ -375,6 +375,22 @@ thread_local! {
     static TIP_CLOSE: Cell<RECT> = const { Cell::new(RECT { left: 0, top: 0, right: 0, bottom: 0 }) };
     /// Set once this launch has shown a tip.
     static TIP_DONE: Cell<bool> = const { Cell::new(false) };
+    /// Where the "Copy" link after the speed is, in the chat's client coordinates; empty when it isn't showing.
+    static COPY_LINK: Cell<RECT> = const { Cell::new(RECT { left: 0, top: 0, right: 0, bottom: 0 }) };
+    /// True for a moment after a copy, so the link reads "Copied".
+    static COPY_DONE: Cell<bool> = const { Cell::new(false) };
+}
+
+fn copy_link_hit(x: i32, y: i32) -> bool {
+    let c = COPY_LINK.get();
+    c.right > c.left && x >= c.left && x < c.right && y >= c.top && y < c.bottom
+}
+
+/// The "Copy" link under the newest reply was clicked.
+fn copy_link_click() {
+    copy_last_reply();
+    COPY_DONE.set(true);
+    unsafe { InvalidateRect(app().view, std::ptr::null(), 0); }
 }
 
 pub fn update_header() {

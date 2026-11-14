@@ -120,6 +120,7 @@ pub unsafe fn draw_logo(dc: HDC, kind: &str, x: i32, cy: i32, size: i32, color: 
 pub(super) unsafe fn stat_paint(view: HWND) {
     let a = app();
     TIP_CLOSE.set(RECT { left: 0, top: 0, right: 0, bottom: 0 });
+    COPY_LINK.set(RECT { left: 0, top: 0, right: 0, bottom: 0 });
     let stat = LAST_STAT.with_borrow(|s| s.clone());
     let tip = TIP.with_borrow(|t| t.clone());
     if a.streaming || (stat.is_empty() && tip.is_none()) { return; }
@@ -152,6 +153,22 @@ pub(super) unsafe fn stat_paint(view: HWND) {
     };
     let t = w(&line);
     TextOutW(dc, p.x, p.y + 1, t.as_ptr(), t.len() as i32 - 1);
+    COPY_LINK.set(RECT { left: 0, top: 0, right: 0, bottom: 0 });
+    if tip.is_none() && !stat.is_empty() {
+        // "Copy" written after the speed, in the same small type: a link that copies this reply.
+        let word = if COPY_DONE.get() { "Copied" } else { "Copy" };
+        let lead = w(sep);
+        let wx = p.x + ext(&line).cx + ext(sep).cx;
+        TextOutW(dc, p.x + ext(&line).cx, p.y + 1, lead.as_ptr(), lead.len() as i32 - 1);
+        let uf = CreateFontW(-(11 * dpi / 96), 0, 0, 0, 400, 0, 1, 0, 1, 0, 0, 5, 0, w(&a.theme.font).as_ptr());
+        SelectObject(dc, uf as _);
+        let cw = w(word);
+        TextOutW(dc, wx, p.y + 1, cw.as_ptr(), cw.len() as i32 - 1);
+        let sz = ext(word);
+        COPY_LINK.set(RECT { left: wx - 2, top: p.y, right: wx + sz.cx + 2, bottom: p.y + sz.cy + 2 });
+        SelectObject(dc, font as _);
+        DeleteObject(uf as _);
+    }
     if tip.is_some() {
         let x = p.x + ext(&line).cx + gap;
         let c = w("\u{00D7}");

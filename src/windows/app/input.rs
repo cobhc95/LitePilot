@@ -238,6 +238,7 @@ pub(super) unsafe extern "system" fn child_proc(h: HWND, msg: u32, wp: WPARAM, l
     if is_input && msg == WM_PASTE && attach_win::paste() { return 0; }
     if msg == WM_DROPFILES { attach_win::dropped(wp as HANDLE); windows_sys::Win32::UI::Shell::DragFinish(wp as HANDLE); return 0; }
     if msg == WM_LBUTTONDOWN && !is_input && tip_close_hit((lp & 0xFFFF) as i16 as i32, ((lp >> 16) & 0xFFFF) as i16 as i32) { dismiss_tip(); return 0; }
+    if msg == WM_LBUTTONDOWN && !is_input && copy_link_hit((lp & 0xFFFF) as i16 as i32, ((lp >> 16) & 0xFFFF) as i16 as i32) { copy_link_click(); return 0; }
     if !is_input {
         // A click on a picture tile opens the viewer; on a row's arrow, pages the row.
         if msg == WM_LBUTTONDOWN && images::click(h, (lp & 0xFFFF) as i16 as i32, ((lp >> 16) & 0xFFFF) as i16 as i32, pic_colors(a)) { return 0; }
