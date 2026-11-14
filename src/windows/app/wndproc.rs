@@ -238,6 +238,17 @@ pub(super) unsafe extern "system" fn wndproc(h: HWND, msg: u32, wp: WPARAM, lp: 
             SelectObject(wp as HDC, old_b);
             SelectObject(wp as HDC, old_p);
             DeleteObject(pen as _);
+            if a.input_lines >= 2 {
+                // A hairline between the text and the controls row.
+                let dpi = GetDpiForWindow(h).max(96) as i32;
+                let y = p.bottom - 40 * dpi / 96;
+                let pen = CreatePen(PS_SOLID, 1, a.theme.bubble);
+                let old_p = SelectObject(wp as HDC, pen as _);
+                MoveToEx(wp as HDC, p.left + 14 * dpi / 96, y, std::ptr::null_mut());
+                LineTo(wp as HDC, p.right - 14 * dpi / 96, y);
+                SelectObject(wp as HDC, old_p);
+                DeleteObject(pen as _);
+            }
             1
         }
         WM_DRAWITEM => {

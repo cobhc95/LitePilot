@@ -490,8 +490,14 @@ fn fit_header() {
         ScreenToClient(a.hwnd, &mut hl);
         let s = |v: i32| v * GetDpiForWindow(a.hwnd).max(96) as i32 / 96;
         let p = RECT { top: a.pill.top + thumbs::height(), ..a.pill };
-        let h = p.bottom - p.top - s(14);
-        MoveWindow(a.input, tl.x + s(8), p.top + s(7), (hl.x - s(6) - tl.x - s(8)).max(s(40)), h, 1);
+        if a.input_lines >= 2 {
+            // The text takes the whole width above the controls row.
+            let h = p.bottom - p.top - input_row_h() - s(8);
+            MoveWindow(a.input, p.left + s(14), p.top + s(6), p.right - p.left - s(28), h, 1);
+        } else {
+            let h = p.bottom - p.top - s(14);
+            MoveWindow(a.input, tl.x + s(8), p.top + s(7), (hl.x - s(6) - tl.x - s(8)).max(s(40)), h, 1);
+        }
     }
 }
 
@@ -613,7 +619,30 @@ fn input_line_h() -> i32 {
 fn input_max_lines(window_h: i32) -> u32 {
     let dpi = unsafe { GetDpiForWindow(app().hwnd) }.max(96) as i32;
     let lh = input_line_h();
-    (((window_h / 2 - 36 * dpi / 96) / lh) + 1).max(1) as u32
+    ((window_h / 2 - 52 * dpi / 96) / lh).max(2) as u32
+}
+
+/// The height of the controls row under the text once the box holds more than one line.
+fn input_row_h() -> i32 { 40 * unsafe { GetDpiForWindow(app().hwnd) }.max(96) as i32 / 96 }
+
+/// Whether this one-line text would still fit in the single-row layout (used so the box doesn't flip back and
+/// forth between the two layouts as the text wraps).
+pub fn single_row_fits(text: &str) -> bool {
+    let a = app();
+    unsafe {
+        let dpi = GetDpiForWindow(a.hwnd).max(96) as i32;
+        let mut hr: RECT = std::mem::zeroed();
+        GetWindowRect(a.header, &mut hr);
+        let room = (a.pill.right - a.pill.left) - (hr.right - hr.left) - (28 * 3 + 40) * dpi / 96;
+        let dc = GetDC(a.input);
+        let old = SelectObject(dc, a.font as _);
+        let u = w(text);
+        let mut sz = SIZE { cx: 0, cy: 0 };
+        GetTextExtentPoint32W(dc, u.as_ptr(), u.len() as i32 - 1, &mut sz);
+        SelectObject(dc, old);
+        ReleaseDC(a.input, dc);
+        sz.cx < room
+    }
 }
 
 /// Positions the controls for the window's current size. Runs on every resize.
@@ -632,21 +661,25 @@ fn place_children() {
         // The pill grows upward with the typed text, up to six lines; the controls stay on its bottom row.
         // Layout B3: a 36px pill. The model name, the menu, and Send stay centred however tall it grows.
         let lh = input_line_h();
-        let extra = (a.input_lines.clamp(1, input_max_lines(wh)) as i32 - 1) * lh;
+        // One line: a single row. More: the text on top and the controls on a row of their own beneath it.
+        let multi = a.input_lines >= 2;
+        let row = input_row_h();
+        let extra = if multi { a.input_lines.clamp(2, input_max_lines(wh)) as i32 * lh + s(12) + row - s(36) } else { 0 };
         // Attached pictures show inside the pill, above the typing row; the controls stay on that row.
         let bar = thumbs::height();
         let (m, ph, b) = (s(10), s(36) + extra + bar, s(28));
         a.pill = RECT { left: m, top: wh - ph - m, right: ww - m, bottom: wh - m };
         let p = RECT { top: a.pill.top + bar, ..a.pill };
         let ph = ph - bar;
-        let cy = p.top + (ph - b) / 2;
+        let cy = if multi { p.bottom - row + (row - b) / 2 } else { p.top + (ph - b) / 2 };
         MoveWindow(a.view, s(14), s(10), ww - s(14), a.pill.top - s(18), 1);
         SendMessageW(a.view, 0xD3, 2, (s(RIGHT_PAD) as isize) << 16); // EM_SETMARGINS: right margin, so text keeps its distance from the edge
         set_card_width();
         if a.small_font.is_null() {
             a.small_font = CreateFontW(-s(12), 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, w("Segoe UI").as_ptr());
         }
-        MoveWindow(a.header, p.left + s(8), p.top + (ph - s(24)) / 2, s(120), s(24), 1);
+        let hy = if multi { p.bottom - row + (row - s(24)) / 2 } else { p.top + (ph - s(24)) / 2 };
+        MoveWindow(a.header, p.left + s(8), hy, s(120), s(24), 1);
         MoveWindow(a.send_btn, p.right - s(5) - b, cy, b, b, 1);
         MoveWindow(a.btn, p.right - s(6) - 2 * b, cy, b, b, 1);
         let mic = a.cfg.dictation;

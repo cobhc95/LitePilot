@@ -291,7 +291,10 @@ pub(super) unsafe extern "system" fn child_proc(h: HWND, msg: u32, wp: WPARAM, l
     // The text direction follows what is typed: from the right for Arabic and similar, otherwise from the left.
     if edits { auto_direction(h); }
     if edits {
-        let n = SendMessageW(h, 0xBA, 0, 0).max(1) as u32; // EM_GETLINECOUNT
+        let mut n = SendMessageW(h, 0xBA, 0, 0).max(1) as u32; // EM_GETLINECOUNT
+        // In the two-row layout the text is wider, so it may count as one line again: stay there unless it would
+        // fit the single row too.
+        if a.input_lines >= 2 && n == 1 { let t = get_text(h); if !t.contains('\n') && !single_row_fits(&t) { n = 2; } }
         let wh = { let mut rc: RECT = std::mem::zeroed(); GetClientRect(a.hwnd, &mut rc); rc.bottom };
         let cap = input_max_lines(wh);
         if n.min(cap) != a.input_lines.min(cap) {
