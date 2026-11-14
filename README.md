@@ -8,6 +8,7 @@ _Version 0.1.21._
   <img src="screenshots/chat.png" alt="A reply in the LitePilot popup" width="380">
   <img src="screenshots/model-menu.png" alt="The model menu with plan usage" width="250">
   <img src="screenshots/claude-models.png" alt="Claude models (Haiku, Sonnet, Opus) with 5-hour and weekly plan usage" width="250">
+  <img src="screenshots/gemini-models.png" alt="Gemini models with 5-hour and weekly plan usage" width="250">
 </p>
 
 ## What it does
