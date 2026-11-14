@@ -292,7 +292,9 @@ pub(super) unsafe extern "system" fn child_proc(h: HWND, msg: u32, wp: WPARAM, l
     if edits { auto_direction(h); }
     if edits {
         let n = SendMessageW(h, 0xBA, 0, 0).max(1) as u32; // EM_GETLINECOUNT
-        if n.min(6) != a.input_lines.min(6) {
+        let wh = { let mut rc: RECT = std::mem::zeroed(); GetClientRect(a.hwnd, &mut rc); rc.bottom };
+        let cap = input_max_lines(wh);
+        if n.min(cap) != a.input_lines.min(cap) {
             a.input_lines = n;
             place_children();
             SendMessageW(h, 0xB7, 0, 0); // EM_SCROLLCARET

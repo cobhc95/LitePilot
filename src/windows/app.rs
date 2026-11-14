@@ -595,6 +595,27 @@ fn layout() {
     }
 }
 
+/// The typing box's real line height in pixels, from its font.
+fn input_line_h() -> i32 {
+    let a = app();
+    unsafe {
+        let dc = GetDC(a.input);
+        let old = SelectObject(dc, a.font as _);
+        let mut tm: TEXTMETRICW = std::mem::zeroed();
+        GetTextMetricsW(dc, &mut tm);
+        SelectObject(dc, old);
+        ReleaseDC(a.input, dc);
+        tm.tmHeight.max(1)
+    }
+}
+
+/// How many lines the typing box may grow to: the pill stays within half the window's height.
+fn input_max_lines(window_h: i32) -> u32 {
+    let dpi = unsafe { GetDpiForWindow(app().hwnd) }.max(96) as i32;
+    let lh = input_line_h();
+    (((window_h / 2 - 36 * dpi / 96) / lh) + 1).max(1) as u32
+}
+
 /// Positions the controls for the window's current size. Runs on every resize.
 fn place_children() {
     let a = app();
@@ -610,7 +631,8 @@ fn place_children() {
         // Layout B: the chat fills the window; every control shares one row in the input pill.
         // The pill grows upward with the typed text, up to six lines; the controls stay on its bottom row.
         // Layout B3: a 36px pill. The model name, the menu, and Send stay centred however tall it grows.
-        let extra = (a.input_lines.clamp(1, 6) as i32 - 1) * s(20);
+        let lh = input_line_h();
+        let extra = (a.input_lines.clamp(1, input_max_lines(wh)) as i32 - 1) * lh;
         // Attached pictures show inside the pill, above the typing row; the controls stay on that row.
         let bar = thumbs::height();
         let (m, ph, b) = (s(10), s(36) + extra + bar, s(28));
