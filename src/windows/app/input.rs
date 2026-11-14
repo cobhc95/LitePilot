@@ -91,6 +91,7 @@ pub(super) unsafe extern "system" fn child_proc(h: HWND, msg: u32, wp: WPARAM, l
     if msg == WM_PAINT && !is_input {
         // The whole chat is drawn off-screen (text, rounded bubbles, pictures, status) and shown in one go,
         // so there is no moment with square bubble corners or half-drawn pieces.
+        before_paint();
         let mut ps: PAINTSTRUCT = std::mem::zeroed();
         let dc = BeginPaint(h, &mut ps);
         let mut rc: RECT = std::mem::zeroed();
@@ -102,7 +103,6 @@ pub(super) unsafe extern "system" fn child_proc(h: HWND, msg: u32, wp: WPARAM, l
         bubbles::begin(mem);
         bubbles::paint(h, a.theme.bg, rtf::cell_shade(a.theme.bubble));
         images::paint(h, pic_colors(a));
-        keep_pointer_normal();
         scrollbar_paint(h, mem);
         stat_paint(h);
         status_paint(h);
@@ -190,7 +190,7 @@ pub(super) unsafe extern "system" fn child_proc(h: HWND, msg: u32, wp: WPARAM, l
                 DRAG_Y.set(None);
                 if msg == WM_MBUTTONUP { ReleaseCapture(); }
             }
-            WM_SETCURSOR if SB_DRAG.get().is_some() => { SetCursor(LoadCursorW(std::ptr::null_mut(), IDC_ARROW)); return 1; }
+            WM_SETCURSOR if SB_DRAG.get().is_some() => { SetCursor(chat_arrow()); return 1; }
             WM_SETCURSOR if DRAG_Y.get().is_some() => { SetCursor(LoadCursorW(std::ptr::null_mut(), IDC_SIZENS)); return 1; }
             WM_MOUSEHWHEEL | WM_HSCROLL => return 0,
             _ => {}
@@ -204,7 +204,7 @@ pub(super) unsafe extern "system" fn child_proc(h: HWND, msg: u32, wp: WPARAM, l
         // The scroll bar strip (the same width that grabs clicks) keeps the normal arrow, not the I-beam or hand.
         if let Some((track, _)) = scrollbar(h) {
             if pt.x >= track.left - 6 * (GetDpiForWindow(h).max(96) as i32) / 96 {
-                SetCursor(LoadCursorW(std::ptr::null_mut(), IDC_ARROW));
+                SetCursor(chat_arrow());
                 return 1;
             }
         }
@@ -212,7 +212,7 @@ pub(super) unsafe extern "system" fn child_proc(h: HWND, msg: u32, wp: WPARAM, l
             SetCursor(LoadCursorW(std::ptr::null_mut(), IDC_HAND));
             return 1;
         }
-        // Anything else is the text control's call (I-beam, or a hand over a link), except its busy pointer.
+        // Anything else is the text control's call (I-beam, or a hand over a link); an arrow becomes the chat's own.
         let r = CallWindowProcW(std::mem::transmute::<isize, WNDPROC>(a.old_view), h, msg, wp, lp);
         keep_pointer_normal();
         return r;

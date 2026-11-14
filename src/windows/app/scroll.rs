@@ -7,32 +7,78 @@ pub(super) const RIGHT_PAD: i32 = 31;
 thread_local! {
     /// While the scroll bar thumb is dragged: (mouse y at the start, scroll position at the start).
     pub(super) static SB_DRAG: Cell<Option<(i32, i32)>> = const { Cell::new(None) };
-    /// What the thumb is sized against while you scroll: (chat key, scrollable height), and when the chat last moved.
-    static THUMB_MAX: Cell<(i64, i32)> = const { Cell::new((-1, 0)) };
-    static LAST_MOVE: Cell<Option<std::time::Instant>> = const { Cell::new(None) };
+    /// The chat's full height in pixels, measured once per layout (see `doc_height`).
+    static DOC_H: Cell<HeightCache> = const { Cell::new(HeightCache { key: u64::MAX, h: 0 }) };
+    /// Set when the pending repaint only comes from scrolling, so the chat's height needn't be measured again.
+    static SCROLL_ONLY: Cell<bool> = const { Cell::new(false) };
+}
+
+/// A measured height, kept until the layout it was measured for changes (`key`).
+#[derive(Clone, Copy)]
+pub(super) struct HeightCache { key: u64, h: i32 }
+
+impl HeightCache {
+    /// The height for `key`: the kept one, or a new measurement when the layout is different.
+    pub(super) fn get(&mut self, key: u64, measure: impl FnOnce() -> i32) -> i32 {
+        if self.key != key { *self = HeightCache { key, h: measure() }; }
+        self.h
+    }
+}
+
+/// The thumb inside a track `len` pixels long: (offset from the track's top, height). Its height depends only on
+/// the page and the scrollable height (never on where you are), and its offset only on the position, so while
+/// you scroll it slides without changing size and lands exactly at the track's ends at the top and the bottom.
+pub(super) fn thumb_geom(len: i32, page: i32, max: i32, pos: i32, min_th: i32) -> (i32, i32) {
+    if len <= 0 || max <= 0 { return (0, len.max(0)); }
+    let th = ((page.max(0) as i64 * len as i64 / (max as i64 + page.max(0) as i64)) as i32).max(min_th).min(len);
+    let off = (pos.clamp(0, max) as i64 * (len - th) as i64 / max as i64) as i32;
+    (off, th)
 }
 
 /// The chat's own slim scroll bar (the system one can't take the theme's colors): the thumb and the strip it
 /// moves in. None when everything fits.
 pub(super) unsafe fn scrollbar(h: HWND) -> Option<(RECT, RECT)> {
-    let real = max_scroll(h);
-    if real <= 0 { return None; }
+    let max = max_scroll(h);
+    if max <= 0 { return None; }
     let (pos, _, page) = scroll_range(h);
     let dpi = GetDpiForWindow(h).max(96) as i32;
     let s = |v: i32| v * dpi / 96;
     let mut rc: RECT = std::mem::zeroed();
     GetClientRect(h, &mut rc);
-    // The text control only estimates the height of what it hasn't laid out yet, and the estimate shifts as you
-    // scroll, which made the thumb jitter. While the chat is moving the thumb keeps the height it had; it takes the
-    // fresh figure whenever the chat itself (its text, size or zoom) changes or has been still for a moment.
-    let key = text_len(h) as i64 ^ ((rc.right as i64) << 20) ^ ((rc.bottom as i64) << 36) ^ ((app().cfg.chat_zoom as i64) << 52);
-    let (ck, cm) = THUMB_MAX.get();
-    let moving = LAST_MOVE.get().is_some_and(|t| t.elapsed() < std::time::Duration::from_millis(400));
-    let max = if ck == key && moving && cm >= pos && cm > 0 { cm } else { THUMB_MAX.set((key, real)); real };
+    // Position and size come from the same `pos` and `max` the scrolling itself uses, so they always agree.
     let track = RECT { left: rc.right - s(12), top: s(6), right: rc.right - s(4), bottom: rc.bottom - s(6) };
-    let th = (page * (track.bottom - track.top) / (max + page)).max(s(32)).min(track.bottom - track.top);
-    let y = track.top + (pos.clamp(0, max) as i64 * (track.bottom - track.top - th) as i64 / max as i64) as i32;
+    let (off, th) = thumb_geom(track.bottom - track.top, page, max, pos, s(32));
+    let y = track.top + off;
     Some((track, RECT { left: track.left, top: y, right: track.right, bottom: y + th }))
+}
+
+/// The full height of the chat's text in pixels. RichEdit is asked once per layout (its text length, width, zoom
+/// and screen scaling, and any repaint that didn't come from scrolling) instead of on every scroll step and paint,
+/// so scrolling can't make the scroll bar's sums move.
+unsafe fn doc_height(view: HWND) -> i32 {
+    let mut rc: RECT = std::mem::zeroed();
+    GetClientRect(view, &mut rc);
+    let key = (text_len(view) as u64 & 0xFFFF_FFFF)
+        ^ ((rc.right as u64 & 0xFFFF) << 32)
+        ^ ((app().cfg.chat_zoom as u64 & 0x3FF) << 48)
+        ^ ((GetDpiForWindow(view) as u64 & 0x3F) << 58);
+    let mut c = DOC_H.get();
+    let h = c.get(key, || {
+        let (pos, _, _) = scroll_range(view);
+        pos + bubbles::char_pos(view, text_len(view)).y
+    });
+    DOC_H.set(c);
+    h
+}
+
+/// Forgets the measured height, so the next use measures the chat again (its content may have changed).
+pub(super) fn forget_height() {
+    DOC_H.set(HeightCache { key: u64::MAX, h: 0 });
+}
+
+/// Called as the chat starts a repaint: a repaint that wasn't asked for by scrolling may mean new content.
+pub(super) fn before_paint() {
+    if !SCROLL_ONLY.replace(false) { forget_height(); }
 }
 
 /// Draws the thumb in the theme's muted text color, soft until you drag it.
@@ -80,15 +126,26 @@ pub(super) unsafe fn scrollbar_mouse(h: HWND, msg: u32, lp: LPARAM) -> bool {
 /// The furthest the chat may scroll: the end of the last reply sits at the bottom edge, never above it, so the
 /// chat can't be scrolled into empty space. (RichEdit itself lets the last line travel up to the top.)
 pub(super) unsafe fn max_scroll(view: HWND) -> i32 {
-    let (pos, _, page) = scroll_range(view);
-    let end_y = bubbles::char_pos(view, text_len(view)).y;
-    (pos + end_y - page + line_px(view) / 3).max(0)
+    let (_, _, page) = scroll_range(view);
+    (doc_height(view) - page + line_px(view) / 3).max(0)
+}
+
+/// EM_SETSCROLLPOS without RichEdit drawing anything itself: on its own it repaints the moved text straight to
+/// the screen at once, outside LitePilot's off-screen frame, so for a moment the slim scroll bar (and the
+/// bubbles' corners) were overdrawn or carried along with the text, which made the thumb flicker as you scrolled.
+/// With drawing held, nothing reaches the screen until the chat's own paint shows the whole new frame in one go.
+unsafe fn move_text(view: HWND, y: i32) {
+    // Only when drawing is on now: inside a refresh that has already held it, it must stay held until that ends.
+    let drawing = GetWindowLongW(view, GWL_STYLE) as u32 & WS_VISIBLE != 0;
+    if drawing { SendMessageW(view, WM_SETREDRAW, 0, 0); }
+    let mut pt = POINT { x: 0, y };
+    SendMessageW(view, 0x0400 + 222, 0, &mut pt as *mut POINT as isize); // EM_SETSCROLLPOS
+    if drawing { SendMessageW(view, WM_SETREDRAW, 1, 0); }
 }
 
 /// Sets the chat's pixel scroll position directly (no repaint; callers paint once).
 pub(super) unsafe fn set_pos(view: HWND, y: i32) {
-    let mut pt = POINT { x: 0, y: y.clamp(0, max_scroll(view)) };
-    SendMessageW(view, 0x0400 + 222, 0, &mut pt as *mut POINT as isize); // EM_SETSCROLLPOS
+    move_text(view, y.clamp(0, max_scroll(view)));
 }
 
 /// Focuses the chat where you are reading: the caret goes to the first character on screen and the scroll
@@ -131,14 +188,31 @@ pub(super) unsafe fn line_px(h: HWND) -> i32 {
     (22 * GetDpiForWindow(h).max(96) as i32 / 96 * app().cfg.chat_zoom as i32 / 100).max(8)
 }
 
-/// The chat's text control switches the pointer to Windows' busy shape (arrow with a ring) while it lays text out in
-/// the background, which shows up as the pointer "loading" while you scroll. That is never wanted here: put the
-/// ordinary text pointer back whenever it is showing.
+thread_local! {
+    static CHAT_ARROW: Cell<HCURSOR> = const { Cell::new(std::ptr::null_mut()) };
+}
+
+/// The chat's arrow pointer: LitePilot's own copy of Windows' arrow, which looks the same.
+///
+/// Why: while any program is starting (a process created without STARTF_FORCEOFFFEEDBACK, such as the chat CLI
+/// LitePilot keeps ready after each reply, or the helper tools that CLI starts in turn), Windows shows its
+/// "app starting" pointer (arrow with a ring) in place of the *system* arrow, wherever that arrow is showing, for
+/// up to several seconds. The swap happens inside Windows, so GetCursor still reports the plain arrow (which is
+/// why checking it never caught anything). Windows only swaps its own shared arrow, so the chat's scroll bar and
+/// any arrow the text control asks for use this copy instead, and stay a normal pointer while you scroll or zoom.
+pub(super) unsafe fn chat_arrow() -> HCURSOR {
+    let c = CHAT_ARROW.get();
+    if !c.is_null() { return c; }
+    // Not LR_SHARED: a separate cursor made from the current arrow at the default size.
+    let mine = LoadImageW(std::ptr::null_mut(), 32512 as *const u16, IMAGE_CURSOR, 0, 0, LR_DEFAULTSIZE) as HCURSOR; // OCR_NORMAL
+    let c = if mine.is_null() { LoadCursorW(std::ptr::null_mut(), IDC_ARROW) } else { mine };
+    CHAT_ARROW.set(c);
+    c
+}
+
+/// After the text control picked its pointer: if it chose Windows' shared arrow, show the chat's own copy instead.
 pub(super) unsafe fn keep_pointer_normal() {
-    let c = GetCursor();
-    if c == LoadCursorW(std::ptr::null_mut(), IDC_APPSTARTING) || c == LoadCursorW(std::ptr::null_mut(), IDC_WAIT) {
-        SetCursor(LoadCursorW(std::ptr::null_mut(), IDC_IBEAM));
-    }
+    if GetCursor() == LoadCursorW(std::ptr::null_mut(), IDC_ARROW) { SetCursor(chat_arrow()); }
 }
 
 /// Moves the chat to `y` pixels from the top (clamped) at once and repaints the whole view.
@@ -147,16 +221,66 @@ pub(super) unsafe fn scroll_to(h: HWND, y: i32) {
     let y = y.clamp(0, max_scroll(h));
     app().pin_user = false; // the reader took over the scrolling
     if y == pos { return; }
-    let mut pt = POINT { x: 0, y };
-    SendMessageW(h, 0x0400 + 222, 0, &mut pt as *mut POINT as isize); // EM_SETSCROLLPOS
-    LAST_MOVE.set(Some(std::time::Instant::now()));
+    move_text(h, y);
     // Marked for repainting, not painted on the spot: wheel and drag events that arrive faster than a frame can
-    // be drawn then share one repaint instead of each forcing its own.
+    // be drawn then share one repaint instead of each forcing its own. When only the position changed, that paint
+    // keeps the measured height (a repaint already pending for another reason still measures again).
+    let pending = GetUpdateRect(h, std::ptr::null_mut(), 0) != 0;
     InvalidateRect(h, std::ptr::null(), 0);
-    keep_pointer_normal();
+    if !pending { SCROLL_ONLY.set(true); }
 }
 
 pub(super) unsafe fn scroll_by(h: HWND, dy: i32) {
     let (pos, _, _) = scroll_range(h);
     scroll_to(h, pos.saturating_add(dy));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{thumb_geom, HeightCache};
+
+    #[test]
+    fn thumb_keeps_its_size_and_slides_end_to_end() {
+        let (len, page, max, min) = (600, 700, 25_000, 48);
+        let (top, th) = thumb_geom(len, page, max, 0, min);
+        assert_eq!(top, 0);
+        assert!(th >= min && th < len);
+        let mut last = -1;
+        for pos in (0..=max).step_by(37) {
+            let (off, h) = thumb_geom(len, page, max, pos, min);
+            assert_eq!(h, th, "the thumb's height must not change while scrolling");
+            assert!(off >= last, "the thumb must never move back while scrolling down");
+            assert!(off + h <= len);
+            last = off;
+        }
+        assert_eq!(thumb_geom(len, page, max, max, min), (len - th, th));
+        // Past either end (a stale position) it stays at that end.
+        assert_eq!(thumb_geom(len, page, max, max + 500, min).0, len - th);
+        assert_eq!(thumb_geom(len, page, max, -40, min).0, 0);
+    }
+
+    #[test]
+    fn thumb_size_follows_the_page_share() {
+        // Half the chat fits: half the track.
+        assert_eq!(thumb_geom(400, 500, 500, 0, 10).1, 200);
+        // A very long chat: never smaller than the minimum.
+        assert_eq!(thumb_geom(400, 500, 5_000_000, 0, 32).1, 32);
+        // Nothing to scroll or no room: whole track, no movement, no division by zero.
+        assert_eq!(thumb_geom(400, 500, 0, 30, 32), (0, 400));
+        assert_eq!(thumb_geom(0, 500, 900, 30, 32), (0, 0));
+    }
+
+    #[test]
+    fn height_is_measured_once_per_layout() {
+        let mut c = HeightCache { key: u64::MAX, h: 0 };
+        let mut calls = 0;
+        // Scrolling: the same layout asked many times, with measurements that would wobble.
+        for wobble in [9000, 9003, 8996, 9001] {
+            assert_eq!(c.get(7, || { calls += 1; wobble }), 9000);
+        }
+        assert_eq!(calls, 1);
+        // New text (or width, zoom, scaling): measured afresh.
+        assert_eq!(c.get(8, || { calls += 1; 9400 }), 9400);
+        assert_eq!(calls, 2);
+    }
 }

@@ -89,6 +89,16 @@ pub fn data_dir() -> PathBuf {
 
 const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 
+/// Looks at this thread's (empty) message queue once. To Windows that is the program going idle, which ends the
+/// "app starting" pointer shown since it was started.
+pub fn ready_for_input() {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{PeekMessageW, MSG, PM_NOREMOVE};
+    unsafe {
+        let mut m: MSG = std::mem::zeroed();
+        PeekMessageW(&mut m, std::ptr::null_mut(), 0, 0, PM_NOREMOVE);
+    }
+}
+
 pub fn hidden(cmd: &str) -> std::process::Command {
     use std::os::windows::process::CommandExt;
     let mut c = std::process::Command::new(cmd);

@@ -35,6 +35,10 @@ pub fn run() {
         let pid = a.get(i + 1).and_then(|p| p.parse().ok()).unwrap_or(0);
         return install::finish_uninstall(pid, std::path::PathBuf::from(a.get(i + 2).cloned().unwrap_or_default()));
     }
+    // The tool servers below are started by the chat CLI. LitePilot.exe is a windowed program, so Windows shows its
+    // "app starting" pointer for several seconds after each start, until the program first waits for input; these
+    // never do, so say so at once.
+    if a.iter().any(|x| x == "--memory-mcp" || x == "--system-mcp") { util::ready_for_input(); }
     // The read-only memory lookup an assistant calls as a tool: LitePilot.exe --memory-mcp <folder with memory.bin>.
     if let Some(i) = a.iter().position(|x| x == "--memory-mcp") {
         let dir = std::path::PathBuf::from(a.get(i + 1).cloned().unwrap_or_default());
