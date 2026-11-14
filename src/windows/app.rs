@@ -46,6 +46,7 @@ const ID_RENDER: usize = 1;
 const ID_COPIED: usize = 2;
 const ID_BLINK: usize = 3;
 const ID_UPDATE: usize = 4;
+const ID_RESIZED: usize = 5;
 
 /// Runs the update tick soon from the message loop, never from inside another window's handler.
 pub fn update_tick_soon() { unsafe { PostMessageW(app().hwnd, WM_TIMER, ID_UPDATE, 0); } }
@@ -375,22 +376,26 @@ thread_local! {
     static TIP_CLOSE: Cell<RECT> = const { Cell::new(RECT { left: 0, top: 0, right: 0, bottom: 0 }) };
     /// Set once this launch has shown a tip.
     static TIP_DONE: Cell<bool> = const { Cell::new(false) };
-    /// Where the "Copy" link after the speed is, in the chat's client coordinates; empty when it isn't showing.
-    static COPY_LINK: Cell<RECT> = const { Cell::new(RECT { left: 0, top: 0, right: 0, bottom: 0 }) };
+    /// The "Copy" links under the replies: where each is (the chat's client coordinates) and which reply it is, counting from the newest.
+    static COPY_LINKS: std::cell::RefCell<Vec<(RECT, usize)>> = const { std::cell::RefCell::new(Vec::new()) };
     /// True for a moment after a copy, so the link reads "Copied".
     static COPY_DONE: Cell<bool> = const { Cell::new(false) };
 }
 
-fn copy_link_hit(x: i32, y: i32) -> bool {
-    let c = COPY_LINK.get();
-    c.right > c.left && x >= c.left && x < c.right && y >= c.top && y < c.bottom
+fn copy_link_hit(x: i32, y: i32) -> Option<usize> {
+    COPY_LINKS.with_borrow(|l| l.iter().find(|(c, _)| x >= c.left && x < c.right && y >= c.top && y < c.bottom).map(|(_, k)| *k))
 }
 
-/// The "Copy" link under the newest reply was clicked.
-fn copy_link_click() {
-    copy_last_reply();
-    COPY_DONE.set(true);
-    unsafe { InvalidateRect(app().view, std::ptr::null(), 0); }
+/// A "Copy" link under a reply was clicked: copies that reply (`k` counts assistant replies from the newest).
+fn copy_link_click(k: usize) {
+    let a = app();
+    let Some(m) = a.msgs.iter().rev().filter(|m| m.role == "assistant").nth(k) else { return };
+    if copy_to_clipboard(&m.text) {
+        set_text(a.header, "Copied");
+        unsafe { SetTimer(a.hwnd, ID_COPIED, 1200, None); }
+        if k == 0 { COPY_DONE.set(true); }
+        unsafe { InvalidateRect(a.view, std::ptr::null(), 0); }
+    }
 }
 
 pub fn update_header() {
@@ -1465,6 +1470,8 @@ pub fn apply_appearance() {
     }
 }
 
+thread_local! { static LAST_DIR: Cell<Option<bool>> = const { Cell::new(None) }; }
+
 /// Sets the reading order of the paragraph the caret is in from its first letter: right-to-left for Arabic, Hebrew and
 /// similar scripts, left-to-right for everything else (including an empty box). PARAFORMAT2 with PFM_RTLPARA.
 unsafe fn auto_direction(h: HWND) {
@@ -1479,6 +1486,11 @@ unsafe fn auto_direction(h: HWND) {
         start += p.len() + 1;
     }
     let right_to_left = rtf::rtl(&String::from_utf16_lossy(para));
+    // Setting the paragraph format makes the box lay out and repaint its text, so it is done only when the
+    // direction actually changes (doing it on every key press made the words flicker as you typed).
+    if text.is_empty() { LAST_DIR.set(None); }
+    if LAST_DIR.get() == Some(right_to_left) && h == app().input { return; }
+    if h == app().input { LAST_DIR.set(Some(right_to_left)); }
     let mut pf = [0u8; 188]; // sizeof(PARAFORMAT2)
     pf[..4].copy_from_slice(&188u32.to_le_bytes());
     pf[4..8].copy_from_slice(&0x0001_0000u32.to_le_bytes()); // dwMask = PFM_RTLPARA

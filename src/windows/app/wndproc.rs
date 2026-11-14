@@ -78,6 +78,11 @@ pub(super) unsafe extern "system" fn wndproc(h: HWND, msg: u32, wp: WPARAM, lp: 
                 if crate::windows::updater::on_tick(a.visible, &mut a.cfg) { save_config(); }
             }
             if wp == key_badges::TIMER { key_badges::show(); }
+            if wp == ID_RESIZED {
+                KillTimer(h, ID_RESIZED);
+                let a = app();
+                if a.visible && !a.streaming { render_keep(); }
+            }
             if wp == ID_COPIED {
                 KillTimer(h, ID_COPIED);
                 update_header();
@@ -209,7 +214,16 @@ pub(super) unsafe extern "system" fn wndproc(h: HWND, msg: u32, wp: WPARAM, lp: 
             mm.ptMinTrackSize = POINT { x: 380 * d / 96, y: 300 * d / 96 };
             0
         }
-        WM_SIZE => { if !app().header.is_null() { place_children(); images::fit_viewer(h); } 0 }
+        WM_SIZE => {
+            if !app().header.is_null() {
+                place_children();
+                images::fit_viewer(h);
+                // Maximise, restore, Snap and dragging all end here: once the size settles, lay the chat out again so
+                // text, tables and code cards fit the new width.
+                SetTimer(h, ID_RESIZED, 120, None);
+            }
+            0
+        }
         WM_EXITSIZEMOVE => {
             let mut r: RECT = std::mem::zeroed();
             GetWindowRect(h, &mut r);

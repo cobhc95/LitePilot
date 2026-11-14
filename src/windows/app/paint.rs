@@ -115,25 +115,22 @@ pub unsafe fn draw_logo(dc: HDC, kind: &str, x: i32, cy: i32, size: i32, color: 
     DeleteObject(pen as _);
 }
 
-/// Draws the speed under the newest reply in the small line reserved after it, with the tip (if any) and its Ã—.
-/// Drawn, never inserted, so it can't be selected or copied with the reply.
+/// Draws, in the small line reserved after each reply, a "Copy" link; under the newest reply it follows the speed
+/// (and the tip, if any, with its x). Drawn, never inserted, so none of it can be selected or copied with the chat.
 pub(super) unsafe fn stat_paint(view: HWND) {
     let a = app();
     TIP_CLOSE.set(RECT { left: 0, top: 0, right: 0, bottom: 0 });
-    COPY_LINK.set(RECT { left: 0, top: 0, right: 0, bottom: 0 });
+    COPY_LINKS.with_borrow_mut(|l| l.clear());
+    if a.streaming { return; }
     let stat = LAST_STAT.with_borrow(|s| s.clone());
     let tip = TIP.with_borrow(|t| t.clone());
-    if a.streaming || (stat.is_empty() && tip.is_none()) { return; }
     let len = GetWindowTextLengthW(view);
-    let cp = bubbles::find_last(view, 0x200C, len);
-    if cp < 0 { return; }
-    let p = bubbles::char_pos(view, cp);
     let mut rc: RECT = std::mem::zeroed();
     GetClientRect(view, &mut rc);
-    if p.y < 0 || p.y > rc.bottom { return; }
     let dc = bubbles::dc_of(view);
     let dpi = GetDpiForWindow(view).max(96) as i32;
     let font = CreateFontW(-(11 * dpi / 96), 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, w(&a.theme.font).as_ptr());
+    let uf = CreateFontW(-(11 * dpi / 96), 0, 0, 0, 400, 0, 1, 0, 1, 0, 0, 5, 0, w(&a.theme.font).as_ptr());
     let old = SelectObject(dc, font as _);
     SetBkMode(dc, 1);
     SetTextColor(dc, a.theme.muted);
@@ -143,41 +140,59 @@ pub(super) unsafe fn stat_paint(view: HWND) {
         GetTextExtentPoint32W(dc, t.as_ptr(), t.len() as i32 - 1, &mut sz);
         sz
     };
-    // The tip follows the speed when both fit on the line; otherwise the tip goes alone.
     let sep = "   \u{00B7}   ";
     let gap = 10 * dpi / 96;
-    let line = match &tip {
-        Some(tp) if !stat.is_empty() && p.x + ext(&format!("{stat}{sep}{tp}")).cx + gap + ext("\u{00D7}").cx < rc.right => format!("{stat}{sep}{tp}"),
-        Some(tp) => tp.clone(),
-        None => stat.clone(),
-    };
-    let t = w(&line);
-    TextOutW(dc, p.x, p.y + 1, t.as_ptr(), t.len() as i32 - 1);
-    COPY_LINK.set(RECT { left: 0, top: 0, right: 0, bottom: 0 });
-    if tip.is_none() && !stat.is_empty() {
-        // "Copy" written after the speed, in the same small type: a link that copies this reply.
-        let word = if COPY_DONE.get() { "Copied" } else { "Copy" };
-        let lead = w(sep);
-        let wx = p.x + ext(&line).cx + ext(sep).cx;
-        TextOutW(dc, p.x + ext(&line).cx, p.y + 1, lead.as_ptr(), lead.len() as i32 - 1);
-        let uf = CreateFontW(-(11 * dpi / 96), 0, 0, 0, 400, 0, 1, 0, 1, 0, 0, 5, 0, w(&a.theme.font).as_ptr());
-        SelectObject(dc, uf as _);
-        let cw = w(word);
-        TextOutW(dc, wx, p.y + 1, cw.as_ptr(), cw.len() as i32 - 1);
-        let sz = ext(word);
-        COPY_LINK.set(RECT { left: wx - 2, top: p.y, right: wx + sz.cx + 2, bottom: p.y + sz.cy + 2 });
-        SelectObject(dc, font as _);
-        DeleteObject(uf as _);
-    }
-    if tip.is_some() {
-        let x = p.x + ext(&line).cx + gap;
-        let c = w("\u{00D7}");
-        TextOutW(dc, x, p.y + 1, c.as_ptr(), c.len() as i32 - 1);
-        let cs = ext("\u{00D7}");
-        TIP_CLOSE.set(RECT { left: x - 4 * dpi / 96, top: p.y, right: x + cs.cx + 4 * dpi / 96, bottom: p.y + cs.cy + 2 });
+    let (mut end, mut k) = (len, 0usize);
+    loop {
+        let cp = bubbles::find_last(view, 0x200C, end);
+        if cp < 0 { break; }
+        let p = bubbles::char_pos(view, cp);
+        if p.y < 0 { break; } // this one and every earlier one are above the visible part
+        end = cp;
+        let this = k;
+        k += 1;
+        if p.y > rc.bottom { continue; }
+        let has_text = a.msgs.iter().rev().filter(|m| m.role == "assistant").nth(this).is_some_and(|m| !m.text.trim().is_empty());
+        // Only the newest reply carries the speed and the tip.
+        let (stat, tip) = if this == 0 { (stat.as_str(), tip.clone()) } else { ("", None) };
+        // The tip follows the speed when both fit on the line; otherwise the tip goes alone.
+        let line = match &tip {
+            Some(tp) if !stat.is_empty() && p.x + ext(&format!("{stat}{sep}{tp}")).cx + gap + ext("\u{00D7}").cx < rc.right => format!("{stat}{sep}{tp}"),
+            Some(tp) => tp.clone(),
+            None => stat.to_string(),
+        };
+        let mut x = p.x;
+        if !line.is_empty() {
+            let t = w(&line);
+            TextOutW(dc, x, p.y + 1, t.as_ptr(), t.len() as i32 - 1);
+            x += ext(&line).cx;
+        }
+        if tip.is_none() && has_text {
+            // "Copy" in the same small type, written as a link, after the speed when there is one.
+            if !line.is_empty() {
+                let lead = w(sep);
+                TextOutW(dc, x, p.y + 1, lead.as_ptr(), lead.len() as i32 - 1);
+                x += ext(sep).cx;
+            }
+            let word = if COPY_DONE.get() && this == 0 { "Copied" } else { "Copy" };
+            SelectObject(dc, uf as _);
+            let cw = w(word);
+            TextOutW(dc, x, p.y + 1, cw.as_ptr(), cw.len() as i32 - 1);
+            let sz = ext(word);
+            SelectObject(dc, font as _);
+            COPY_LINKS.with_borrow_mut(|l| l.push((RECT { left: x - 2, top: p.y, right: x + sz.cx + 2, bottom: p.y + sz.cy + 2 }, this)));
+        }
+        if tip.is_some() {
+            let xx = x + gap;
+            let c = w("\u{00D7}");
+            TextOutW(dc, xx, p.y + 1, c.as_ptr(), c.len() as i32 - 1);
+            let cs = ext("\u{00D7}");
+            TIP_CLOSE.set(RECT { left: xx - 4 * dpi / 96, top: p.y, right: xx + cs.cx + 4 * dpi / 96, bottom: p.y + cs.cy + 2 });
+        }
     }
     SelectObject(dc, old);
     DeleteObject(font as _);
+    DeleteObject(uf as _);
     bubbles::release(view, dc);
 }
 

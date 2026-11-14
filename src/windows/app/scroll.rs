@@ -129,7 +129,9 @@ pub(super) unsafe fn scroll_to(h: HWND, y: i32) {
     if y == pos { return; }
     let mut pt = POINT { x: 0, y };
     SendMessageW(h, 0x0400 + 222, 0, &mut pt as *mut POINT as isize); // EM_SETSCROLLPOS
-    RedrawWindow(h, std::ptr::null(), std::ptr::null_mut(), RDW_INVALIDATE | RDW_UPDATENOW);
+    // Marked for repainting, not painted on the spot: wheel and drag events that arrive faster than a frame can
+    // be drawn then share one repaint instead of each forcing its own.
+    InvalidateRect(h, std::ptr::null(), 0);
 }
 
 pub(super) unsafe fn scroll_by(h: HWND, dy: i32) {
