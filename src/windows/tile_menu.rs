@@ -27,7 +27,7 @@ impl Tile {
             Tile::New => ("\u{E710}", "New", "New chat", "new_chat", "new chat"),
             Tile::History => ("\u{E81C}", "History", "Previous chats", "history", "previous chats history"),
             Tile::Top => ("\u{E718}", "On top", "Keep on top", "on_top", "keep on top pin"),
-            Tile::Copy => ("\u{E8C8}", "Copy", "Copy the last reply", "copy_reply", "copy last reply"),
+            Tile::Copy => ("\u{E8C8}", "Copy\nconversation", "Copy the whole conversation", "copy_chat", "copy conversation chat whole all"),
             Tile::Dictate => ("\u{E720}", "Dictate", "Mic dictation button", "dictate", "dictation dictate mic microphone voice"),
             Tile::Taskbar => ("\u{E7C4}", "Taskbar", "Show in taskbar and Alt+Tab", "taskbar", "taskbar alt tab show"),
             Tile::Settings => ("\u{E713}", "Settings", "Settings", "settings", "settings preferences options"),
@@ -82,7 +82,7 @@ impl Menu {
     }
 
     fn layout(&mut self) -> (i32, i32) {
-        let (pad, tw, th, gap) = (s(8), s(66), s(58), s(4));
+        let (pad, tw, th, gap) = (s(8), s(70), s(58), s(4));
         let w = pad * 2 + COLS as i32 * tw + (COLS as i32 - 1) * gap;
         self.search = RECT { left: pad, top: pad, right: w - pad, bottom: pad + s(32) };
         let mut y = pad + s(32) + s(6);
@@ -340,10 +340,21 @@ unsafe fn paint(h: HWND, dc: HDC, m: &Menu) {
         if i == m.cursor { round(dc, r, mix(a.theme.bg, a.theme.bubble, 55), Some(mix(a.theme.bubble, a.theme.accent, 55)), s(12)); }
         let on = t.state() == Some(true);
         let o = SelectObject(dc, a.icon_font() as _);
-        text(dc, g, RECT { left: r.left, top: r.top + s(6), right: r.right, bottom: r.top + s(34) }, if on { a.theme.accent } else { a.theme.muted }, DT_CENTER);
+        let two = label.contains('\n');
+        let it = if two { 2 } else { 6 };
+        text(dc, g, RECT { left: r.left, top: r.top + s(it), right: r.right, bottom: r.top + s(it + 28) }, if on { a.theme.accent } else { a.theme.muted }, DT_CENTER);
         SelectObject(dc, o);
         let o = SelectObject(dc, a.small_font() as _);
-        text(dc, label, RECT { left: r.left, top: r.top + s(33), right: r.right, bottom: r.bottom - s(3) }, if on { a.theme.accent } else { a.theme.text }, DT_CENTER);
+        let col = if on { a.theme.accent } else { a.theme.text };
+        if two {
+            // Two short lines under the icon, so the tile stays as narrow and as tall as the others.
+            for (n, line) in label.split('\n').enumerate() {
+                let top = r.top + s(28) + n as i32 * s(13);
+                text(dc, line, RECT { left: r.left, top, right: r.right, bottom: top + s(14) }, col, DT_CENTER);
+            }
+        } else {
+            text(dc, label, RECT { left: r.left, top: r.top + s(33), right: r.right, bottom: r.bottom - s(3) }, col, DT_CENTER);
+        }
         SelectObject(dc, o);
         if t.state().is_some() {
             // A small dot marks a switch that is on.

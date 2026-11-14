@@ -124,6 +124,7 @@ pub fn run_action(id: &str) {
             "dictate" => if a.cfg.dictation { dictate() },
             "copy_code" => copy_last_block(),
             "copy_reply" => copy_last_reply(),
+            "copy_chat" => copy_chat(),
             "on_top" => toggle_on_top(),
             "taskbar" => { toggle_taskbar(); if tile_menu::is_open() { tile_menu::redraw(); } }
             "settings" => settings::open(),

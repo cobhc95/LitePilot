@@ -1287,6 +1287,18 @@ fn cycle_effort() {
     changed_profile();
 }
 
+/// Copies the whole chat with each turn labelled: "User:" and "AI:".
+fn copy_chat() {
+    let a = app();
+    let text = a.msgs.iter().filter(|m| (m.role == "user" || m.role == "assistant") && !m.text.trim().is_empty())
+        .map(|m| format!("{}:\n{}", if m.role == "user" { "User" } else { "AI" }, m.text.trim()))
+        .collect::<Vec<_>>().join("\n\n");
+    if !text.is_empty() && copy_to_clipboard(&text) {
+        set_text(a.header, "Copied");
+        unsafe { SetTimer(a.hwnd, ID_COPIED, 1200, None); }
+    }
+}
+
 fn copy_last_reply() {
     let a = app();
     let Some(m) = a.msgs.iter().rev().find(|m| m.role == "assistant") else { return };
