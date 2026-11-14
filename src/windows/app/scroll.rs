@@ -11,6 +11,38 @@ thread_local! {
     static DOC_H: Cell<HeightCache> = const { Cell::new(HeightCache { key: u64::MAX, h: 0 }) };
     /// Set when the pending repaint only comes from scrolling, so the chat's height needn't be measured again.
     static SCROLL_ONLY: Cell<bool> = const { Cell::new(false) };
+    /// How often max_scroll ran since the last timed frame (frame timing only).
+    static MAX_CALLS: Cell<u32> = const { Cell::new(0) };
+}
+
+thread_local! {
+    /// Frame timing, only when LITEPILOT_PERF names a file: (that file, when the last lap ended, this frame's laps).
+    static PERF: std::cell::RefCell<Option<(PathBuf, std::time::Instant, String)>> = std::cell::RefCell::new(
+        std::env::var_os("LITEPILOT_PERF").map(|p| (PathBuf::from(p), std::time::Instant::now(), String::new())));
+}
+
+/// Records how long the step just finished took (microseconds), when frame timing is on. Costs nothing otherwise.
+pub(super) fn perf_lap(label: &str) {
+    PERF.with_borrow_mut(|p| if let Some((_, t, s)) = p {
+        s.push_str(&format!("{label}={} ", t.elapsed().as_micros()));
+        *t = std::time::Instant::now();
+    });
+}
+
+/// Starts a frame's timing (drops anything recorded outside a frame).
+pub(super) fn perf_start() {
+    PERF.with_borrow_mut(|p| if let Some((_, t, s)) = p { s.clear(); *t = std::time::Instant::now(); });
+}
+
+/// Ends a frame: appends its line of laps to the timing file.
+pub(super) fn perf_end(kind: &str) {
+    PERF.with_borrow_mut(|p| if let Some((f, t, s)) = p {
+        use std::io::Write;
+        let n = MAX_CALLS.replace(0);
+        if let Ok(mut o) = std::fs::OpenOptions::new().create(true).append(true).open(&*f) { let _ = writeln!(o, "{kind} {s}max_scroll_calls={n}"); }
+        s.clear();
+        *t = std::time::Instant::now();
+    });
 }
 
 /// A measured height, kept until the layout it was measured for changes (`key`).
@@ -74,6 +106,7 @@ unsafe fn doc_height(view: HWND) -> i32 {
 /// Forgets the measured height, so the next use measures the chat again (its content may have changed).
 pub(super) fn forget_height() {
     DOC_H.set(HeightCache { key: u64::MAX, h: 0 });
+    bubbles::forget_marks();
 }
 
 /// Called as the chat starts a repaint: a repaint that wasn't asked for by scrolling may mean new content.
@@ -126,6 +159,7 @@ pub(super) unsafe fn scrollbar_mouse(h: HWND, msg: u32, lp: LPARAM) -> bool {
 /// The furthest the chat may scroll: the end of the last reply sits at the bottom edge, never above it, so the
 /// chat can't be scrolled into empty space. (RichEdit itself lets the last line travel up to the top.)
 pub(super) unsafe fn max_scroll(view: HWND) -> i32 {
+    MAX_CALLS.set(MAX_CALLS.get() + 1);
     let (_, _, page) = scroll_range(view);
     (doc_height(view) - page + line_px(view) / 3).max(0)
 }
@@ -217,17 +251,22 @@ pub(super) unsafe fn keep_pointer_normal() {
 
 /// Moves the chat to `y` pixels from the top (clamped) at once and repaints the whole view.
 pub(super) unsafe fn scroll_to(h: HWND, y: i32) {
+    perf_start();
     let (pos, _, _) = scroll_range(h);
     let y = y.clamp(0, max_scroll(h));
+    perf_lap("clamp");
     app().pin_user = false; // the reader took over the scrolling
     if y == pos { return; }
+    // (Looked at before the move: RichEdit marks itself for repainting when drawing is switched back on.)
+    let pending = GetUpdateRect(h, std::ptr::null_mut(), 0) != 0;
     move_text(h, y);
+    perf_lap("setpos");
     // Marked for repainting, not painted on the spot: wheel and drag events that arrive faster than a frame can
     // be drawn then share one repaint instead of each forcing its own. When only the position changed, that paint
     // keeps the measured height (a repaint already pending for another reason still measures again).
-    let pending = GetUpdateRect(h, std::ptr::null_mut(), 0) != 0;
     InvalidateRect(h, std::ptr::null(), 0);
     if !pending { SCROLL_ONLY.set(true); }
+    perf_end("scroll");
 }
 
 pub(super) unsafe fn scroll_by(h: HWND, dy: i32) {

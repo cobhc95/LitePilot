@@ -124,9 +124,10 @@ pub(super) unsafe fn stat_paint(view: HWND) {
     if a.streaming { return; }
     let stat = LAST_STAT.with_borrow(|s| s.clone());
     let tip = TIP.with_borrow(|t| t.clone());
-    let len = GetWindowTextLengthW(view);
     let mut rc: RECT = std::mem::zeroed();
     GetClientRect(view, &mut rc);
+    let (_, ends) = bubbles::marks(view);
+    let (first, last) = bubbles::visible_range(view, &rc);
     let dc = bubbles::dc_of(view);
     let dpi = GetDpiForWindow(view).max(96) as i32;
     let font = CreateFontW(-(11 * dpi / 96), 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, w(&a.theme.font).as_ptr());
@@ -142,15 +143,12 @@ pub(super) unsafe fn stat_paint(view: HWND) {
     };
     let sep = "   \u{00B7}   ";
     let gap = 10 * dpi / 96;
-    let (mut end, mut k) = (len, 0usize);
-    loop {
-        let cp = bubbles::find_last(view, 0x200C, end);
-        if cp < 0 { break; }
+    // Newest first; `this` counts from the newest reply. Only marks in the visible text are asked where they are.
+    for (this, &cp) in ends.iter().rev().enumerate() {
+        if cp > last + 1 { continue; }
+        if cp < first.saturating_sub(1) { break; } // this one and every earlier one are above the visible part
         let p = bubbles::char_pos(view, cp);
-        if p.y < 0 { break; } // this one and every earlier one are above the visible part
-        end = cp;
-        let this = k;
-        k += 1;
+        if p.y < 0 { break; }
         if p.y > rc.bottom { continue; }
         let has_text = a.msgs.iter().rev().filter(|m| m.role == "assistant").nth(this).is_some_and(|m| !m.text.trim().is_empty());
         // Only the newest reply carries the speed and the tip.

@@ -91,6 +91,7 @@ pub(super) unsafe extern "system" fn child_proc(h: HWND, msg: u32, wp: WPARAM, l
     if msg == WM_PAINT && !is_input {
         // The whole chat is drawn off-screen (text, rounded bubbles, pictures, status) and shown in one go,
         // so there is no moment with square bubble corners or half-drawn pieces.
+        perf_start();
         before_paint();
         let mut ps: PAINTSTRUCT = std::mem::zeroed();
         let dc = BeginPaint(h, &mut ps);
@@ -99,19 +100,28 @@ pub(super) unsafe extern "system" fn child_proc(h: HWND, msg: u32, wp: WPARAM, l
         let mem = CreateCompatibleDC(dc);
         let bmp = CreateCompatibleBitmap(dc, rc.right.max(1), rc.bottom.max(1));
         let old = SelectObject(mem, bmp as _);
+        perf_lap("setup");
         CallWindowProcW(std::mem::transmute::<isize, WNDPROC>(a.old_view), h, 0x0318, mem as usize, 4 | 8); // WM_PRINTCLIENT: PRF_CLIENT | PRF_ERASEBKGND
+        perf_lap("text");
         bubbles::begin(mem);
         bubbles::paint(h, a.theme.bg, rtf::cell_shade(a.theme.bubble));
+        perf_lap("bubbles");
         images::paint(h, pic_colors(a));
+        perf_lap("images");
         scrollbar_paint(h, mem);
+        perf_lap("scrollbar");
         stat_paint(h);
+        perf_lap("stat");
         status_paint(h);
+        perf_lap("status");
         bubbles::end();
         BitBlt(dc, 0, 0, rc.right, rc.bottom, mem, 0, 0, SRCCOPY);
+        perf_lap("blit");
         SelectObject(mem, old);
         DeleteObject(bmp as _);
         DeleteDC(mem);
         EndPaint(h, &ps);
+        perf_end("paint");
         return 0;
     }
     if msg == WM_PAINT {
@@ -164,10 +174,15 @@ pub(super) unsafe extern "system" fn child_proc(h: HWND, msg: u32, wp: WPARAM, l
                     // Top, bottom and thumb drag use RichEdit's own numbers, then repaint at once.
                     _ => {
                         if matches!((wp & 0xFFFF) as i32, SB_THUMBTRACK | SB_TOP) { a.pin_user = false; }
+                        // RichEdit draws nothing itself (it would paint outside the off-screen frame); the chat's own
+                        // paint shows the result, in the next frame, like any other scroll.
+                        let drawing = GetWindowLongW(h, GWL_STYLE) as u32 & WS_VISIBLE != 0;
+                        if drawing { SendMessageW(h, WM_SETREDRAW, 0, 0); }
                         let r = CallWindowProcW(std::mem::transmute::<isize, WNDPROC>(a.old_view), h, msg, wp, lp);
                         let (pos, _, _) = scroll_range(h);
                         if pos > max_scroll(h) { set_pos(h, pos); } // dragged or jumped past the last reply: pull back
-                        RedrawWindow(h, std::ptr::null(), std::ptr::null_mut(), RDW_INVALIDATE | RDW_UPDATENOW);
+                        if drawing { SendMessageW(h, WM_SETREDRAW, 1, 0); }
+                        InvalidateRect(h, std::ptr::null(), 0);
                         return r;
                     }
                 }

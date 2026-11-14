@@ -18,13 +18,61 @@ pub fn end() { TARGET.set(std::ptr::null_mut()); }
 pub unsafe fn dc_of(h: HWND) -> HDC { let t = TARGET.get(); if t.is_null() { GetDC(h) } else { t } }
 pub unsafe fn release(h: HWND, dc: HDC) { if dc != TARGET.get() { ReleaseDC(h, dc); } }
 
-#[repr(C, packed(4))]
-struct FindText { min: i32, max: i32, text: *const u16, found_min: i32, found_max: i32 }
+thread_local! {
+    /// Where the zero-width marks are, as character positions: (text length they were found for, bubble marks
+    /// U+200B in order, reply-end marks U+200C in order). Found once per text, not on every paint.
+    static MARKS: std::cell::RefCell<(i32, std::rc::Rc<Vec<i32>>, std::rc::Rc<Vec<i32>>)> = std::cell::RefCell::new((-1, Default::default(), Default::default()));
+}
 
-unsafe fn find(view: HWND, from: i32) -> i32 {
-    let needle = [0x200Bu16, 0];
-    let mut f = FindText { min: from, max: -1, text: needle.as_ptr(), found_min: -1, found_max: -1 };
-    SendMessageW(view, 0x47C, 1, &mut f as *mut _ as isize) as i32 // EM_FINDTEXTEXW, FR_DOWN
+/// Forgets the marks found, so the next paint looks for them again (the text may have changed).
+pub fn forget_marks() { MARKS.with_borrow_mut(|m| m.0 = -1); }
+
+/// Positions of `mark` in `text`, which holds one UTF-16 unit per character position (as EM_GETTEXTEX with GT_RAWTEXT gives).
+fn positions(text: &[u16], mark: u16) -> Vec<i32> {
+    text.iter().enumerate().filter(|(_, &c)| c == mark).map(|(i, _)| i as i32).collect()
+}
+
+/// The whole text in one EM_GETTEXTEX with GT_RAWTEXT: one unit per character position, the tables' structure
+/// characters included (plain text leaves those out, which shifts every position after the first table). Asking
+/// RichEdit to find each mark separately took around 3 ms per mark on a long chat: seconds per paint.
+unsafe fn all_text(view: HWND) -> Vec<u16> {
+    #[repr(C)]
+    struct GetTextEx { cb: u32, flags: u32, codepage: u32, default_char: *const u8, used_default: *mut i32 }
+    // Room for every character position: the plain length can be shorter than that, so double it.
+    let q: [u32; 2] = [8, 1200]; // GTL_NUMCHARS, UTF-16
+    let cap = (SendMessageW(view, 0x45F, q.as_ptr() as usize, 0).max(0) as usize) * 2 + 64; // EM_GETTEXTLENGTHEX
+    let mut buf = vec![0u16; cap];
+    let mut g = GetTextEx { cb: (cap * 2) as u32, flags: 4, codepage: 1200, default_char: std::ptr::null(), used_default: std::ptr::null_mut() }; // GT_RAWTEXT, UTF-16
+    let n = SendMessageW(view, 0x45E, &mut g as *mut _ as usize, buf.as_mut_ptr() as isize).max(0) as usize; // EM_GETTEXTEX
+    buf.truncate(n.min(cap - 1));
+    buf
+}
+
+/// (bubble marks, reply-end marks), found again only when the text's length changed or `forget_marks` ran.
+pub fn marks(view: HWND) -> (std::rc::Rc<Vec<i32>>, std::rc::Rc<Vec<i32>>) {
+    // The number of character positions (GTL_NUMCHARS, no CRLF counting): cheap, unlike WM_GETTEXTLENGTH, which
+    // walks the whole text on every call.
+    let q: [u32; 2] = [8, 1200];
+    let len = unsafe { SendMessageW(view, 0x45F, q.as_ptr() as usize, 0) } as i32; // EM_GETTEXTLENGTHEX
+    MARKS.with_borrow_mut(|m| {
+        if m.0 != len {
+            let t = unsafe { all_text(view) };
+            *m = (len, std::rc::Rc::new(positions(&t, 0x200B)), std::rc::Rc::new(positions(&t, 0x200C)));
+        }
+        (m.1.clone(), m.2.clone())
+    })
+}
+
+/// The first and last character on screen. Asking where a character far off screen is makes RichEdit walk every
+/// line in between, so the painters only ask about marks inside this range (plus the one just before it).
+pub fn visible_range(view: HWND, rc: &RECT) -> (i32, i32) {
+    unsafe {
+        let mut a = POINT { x: 0, y: 0 };
+        let mut b = POINT { x: rc.right, y: rc.bottom };
+        let first = SendMessageW(view, 0xD7, 0, &mut a as *mut _ as isize) as i32; // EM_CHARFROMPOS (POINTL in lParam)
+        let last = SendMessageW(view, 0xD7, 0, &mut b as *mut _ as isize) as i32;
+        (first, last.max(first))
+    }
 }
 
 unsafe fn pos(view: HWND, cp: i32) -> POINT {
@@ -40,13 +88,15 @@ pub fn paint(view: HWND, page: u32, bubble: u32) {
         let dpi = GetDpiForWindow(view).max(96) as i32;
         let rad = 9 * dpi / 96;
         let dc = dc_of(view);
-        let mut from = 0;
-        loop {
-            let a = find(view, from);
-            if a < 0 { break; }
-            let b = find(view, a + 1);
-            if b < 0 { break; }
-            from = b + 1;
+        let (opens, _) = marks(view);
+        let (first, last) = visible_range(view, &rc);
+        // Bubbles are pairs of marks; only those reaching into the visible text are looked at.
+        let start = opens.partition_point(|&c| c < first);
+        let start = start - start % 2; // the pair that holds the first visible character, if any
+        for pair in opens[start.min(opens.len())..].chunks_exact(2) {
+            let (a, b) = (pair[0], pair[1]);
+            if b + 1 < first { continue; }
+            if a > last + 1 { break; }
             let (p, q) = (pos(view, a), pos(view, b + 1));
             if q.y < 0 { continue; }
             if p.y > rc.bottom { break; }
@@ -140,14 +190,15 @@ unsafe fn restyle_selected(dc: HDC, r: &RECT, fill: u32, bubble: u32, first: POI
     DeleteDC(mem);
 }
 
-/// Character index of the last occurrence of `mark` in the view, or -1. Searches backward from the end.
-pub fn find_last(view: HWND, mark: u16, len: i32) -> i32 {
-    unsafe {
-        let needle = [mark, 0];
-        let mut f = FindText { min: len, max: 0, text: needle.as_ptr(), found_min: -1, found_max: -1 };
-        SendMessageW(view, 0x47C, 0, &mut f as *mut _ as isize) as i32 // EM_FINDTEXTEXW, no FR_DOWN
-    }
-}
-
 /// Top-left pixel of a character, in the view's client area.
 pub fn char_pos(view: HWND, cp: i32) -> POINT { unsafe { pos(view, cp) } }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn marks_are_found_by_position() {
+        let t: Vec<u16> = "a\u{200B}bc\u{200B}\rd\u{200C}".encode_utf16().collect();
+        assert_eq!(super::positions(&t, 0x200B), vec![1, 4]);
+        assert_eq!(super::positions(&t, 0x200C), vec![7]);
+    }
+}
