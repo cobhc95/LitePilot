@@ -82,7 +82,7 @@ pub(super) unsafe extern "system" fn wndproc(h: HWND, msg: u32, wp: WPARAM, lp: 
             if wp == ID_RESIZED {
                 KillTimer(h, ID_RESIZED);
                 let a = app();
-                if a.visible && !a.streaming { render_keep(); }
+                if a.visible && !a.streaming { rerender_keeping_place(); }
             }
             if wp == ID_COPIED {
                 KillTimer(h, ID_COPIED);

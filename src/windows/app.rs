@@ -191,10 +191,31 @@ pub fn set_chat_zoom(pct: u32) {
     unsafe { SetTimer(a.hwnd, ID_ZOOMED, 90, None); }
 }
 
+/// Lays the chat out again (after a zoom or a resize) and keeps the reader's place: the text in the middle of the
+/// view stays where it was on screen, and a chat scrolled to its end stays at its end.
+pub fn rerender_keeping_place() {
+    let a = app();
+    if !a.visible || a.streaming { rerender(); return; }
+    unsafe {
+        let (pos, _, page) = scroll_range(a.view);
+        let at_end = pos >= max_scroll(a.view) - 2;
+        let d = GetDpiForWindow(a.view).max(96) as i32 / 96;
+        let mut pt = POINT { x: 12 * d, y: page / 2 };
+        let cp = SendMessageW(a.view, 0xD7, 0, &mut pt as *mut POINT as isize) as i32; // EM_CHARFROMPOS
+        let y_before = bubbles::char_pos(a.view, cp).y;
+        rerender();
+        if at_end { scroll_bottom(a.view); return; }
+        let (pos, _, _) = scroll_range(a.view);
+        let y_after = bubbles::char_pos(a.view, cp).y;
+        set_pos(a.view, pos + y_after - y_before);
+        InvalidateRect(a.view, std::ptr::null(), 0);
+    }
+}
+
 /// Runs once the zoom has settled.
 fn apply_zoom() {
     let a = app();
-    rerender();
+    rerender_keeping_place();
     unsafe { InvalidateRect(a.view, std::ptr::null(), 1); }
     save_config();
 }

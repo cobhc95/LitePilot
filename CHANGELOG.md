@@ -2,7 +2,10 @@
 
 Earlier versions are described on the [GitHub releases page](https://github.com/cobhc95/LitePilot/releases).
 
-## 0.1.45 to 0.1.59
+## 0.1.45 to 0.1.60
+
+### 0.1.60: zoom and resize keep your place
+- Zooming (or resizing) used to keep the same pixel position, so the text you were reading drifted far away as the layout changed. The text in the middle of the view now stays where it was on screen, and a chat scrolled to its end stays at its end.
 
 ### 0.1.59: scrolling a long chat no longer stalls the window
 - **Cause:** two painters that run on every chat paint were slow on long chats. The Copy-link painter and the bubble-corner painter asked the text control (RichEdit) where every reply and bubble marker was, including ones far off screen, and each position query makes RichEdit walk the text in between. One paint could block the UI thread for up to 2 s, wheel input piled up behind it, and Windows showed its busy pointer (arrow with a ring) while you scrolled.
