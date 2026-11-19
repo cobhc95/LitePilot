@@ -410,7 +410,14 @@ thread_local! {
     static COPY_LINKS: std::cell::RefCell<Vec<(RECT, usize)>> = const { std::cell::RefCell::new(Vec::new()) };
     /// True for a moment after a copy, so the link reads "Copied".
     static COPY_DONE: Cell<bool> = const { Cell::new(false) };
+    /// Each reply's hover zone in the chat's client coordinates: (top, bottom, reply counted from the newest).
+    static REPLY_ZONES: std::cell::RefCell<Vec<(i32, i32, usize)>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// The reply the pointer is over (its buttons show), counted from the newest.
+    static HOVER_K: Cell<Option<usize>> = const { Cell::new(None) };
 }
+
+/// Hover/copy keys from this value up are your own messages (counted from the newest); below it, the AI's replies.
+const USER_KEY: usize = 1_000_000;
 
 fn copy_link_hit(x: i32, y: i32) -> Option<usize> {
     COPY_LINKS.with_borrow(|l| l.iter().find(|(c, _)| x >= c.left && x < c.right && y >= c.top && y < c.bottom).map(|(_, k)| *k))
@@ -419,7 +426,8 @@ fn copy_link_hit(x: i32, y: i32) -> Option<usize> {
 /// A "Copy" link under a reply was clicked: copies that reply (`k` counts assistant replies from the newest).
 fn copy_link_click(k: usize) {
     let a = app();
-    let Some(m) = a.msgs.iter().rev().filter(|m| m.role == "assistant").nth(k) else { return };
+    let (role, n) = if k >= USER_KEY { ("user", k - USER_KEY) } else { ("assistant", k) };
+    let Some(m) = a.msgs.iter().rev().filter(|m| m.role == role).nth(n) else { return };
     if copy_to_clipboard(&m.text) {
         set_text(a.header, "Copied");
         unsafe { SetTimer(a.hwnd, ID_COPIED, 1200, None); }
@@ -919,17 +927,19 @@ pub fn hide() {
         // Hand focus back only if LitePilot still has it. If you already moved to another window (or minimized
         // LitePilot), that window keeps focus; pulling an older one forward is what disturbed other windows.
         let had_focus = GetForegroundWindow() == a.hwnd && IsIconic(a.hwnd) == 0;
-        ShowWindow(a.hwnd, SW_HIDE);
         if had_focus {
             // Back to the window you came from; failing that, the next real window down the stack (never the desktop).
-            let mut to = if returnable(a.prev) { a.prev } else { std::ptr::null_mut() };
+            let mut to = if returnable(a.prev) && IsWindowVisible(a.prev) != 0 && IsIconic(a.prev) == 0 { a.prev } else { std::ptr::null_mut() };
             let mut h = GetWindow(a.hwnd, GW_HWNDNEXT);
             while to.is_null() && !h.is_null() {
-                if returnable(h) && GetWindow(h, GW_OWNER).is_null() && GetWindowLongPtrW(h, GWL_EXSTYLE) & WS_EX_TOOLWINDOW as isize == 0 { to = h; }
+                if returnable(h) && IsWindowVisible(h) != 0 && IsIconic(h) == 0 && GetWindow(h, GW_OWNER).is_null() && GetWindowLongPtrW(h, GWL_EXSTYLE) & WS_EX_TOOLWINDOW as isize == 0 { to = h; }
                 h = GetWindow(h, GW_HWNDNEXT);
             }
+            // Hand focus over while LitePilot is still in front: once it is hidden, Windows picks a window itself
+            // and this process may no longer be allowed to override that choice (which landed on the wrong window).
             if !to.is_null() { SetForegroundWindow(to); }
         }
+        ShowWindow(a.hwnd, SW_HIDE);
         // Remember where the chat was scrolled before it is emptied, so showing it again goes back there.
         let (pos, _, _) = scroll_range(a.view);
         SAVED_SCROLL.with_borrow_mut(|s| *s = Some((a.chat.clone(), pos)));
@@ -1569,6 +1579,8 @@ pub fn run(show_now: bool) {
 
         let data = data_dir();
         let cfg = Config::load(&data.join("config.json"));
+        // On by default: make sure the Run entry exists (and points at this exe) unless the user turned it off.
+        if cfg.start_with_windows { set_autostart(true); }
         let th = theme(&cfg);
         menu_theme(th.bg < 0x808080);
         let bg_brush = CreateSolidBrush(th.bg);

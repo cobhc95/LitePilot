@@ -244,7 +244,7 @@ fn spawn(kind: &str, model: &str, effort: &str, search: bool, memory: &str, engi
 fn handshake(s: &mut Server) -> Result<(), String> {
     if s.kind == "gemini" {
         // Without a sign-in the CLI would open a browser and wait; say so instead.
-        if !super::cli::is_signed_in("gemini") { return Err("Not signed in yet. Open Settings, then Subscriptions, then Gemini, and click Sign in.".into()); }
+        if !super::cli::is_signed_in("gemini") { return Err("Not signed in yet. Open Settings, then Accounts, then Gemini, and click Sign in.".into()); }
         s.call("initialize", json!({"protocolVersion": 1, "clientCapabilities": {}}))?;
         // Uses the Google sign-in the CLI already holds; a failure here shows up when the session is made.
         let _ = s.call("authenticate", json!({"methodId": "oauth-personal"}));

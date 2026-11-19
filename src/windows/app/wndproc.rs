@@ -174,6 +174,12 @@ pub(super) unsafe extern "system" fn wndproc(h: HWND, msg: u32, wp: WPARAM, lp: 
             let a = app();
             set_title(wp & 0xFFFF != 0);
             lift_settings(a);
+            // Each time LitePilot is brought forward, remember the window you came from (lp), so closing goes back to
+            // that one and not to whichever window was in front when LitePilot first opened.
+            if wp & 0xFFFF != 0 && a.visible {
+                let from = lp as HWND;
+                if !from.is_null() && from != a.settings && from != a.hwnd && returnable(from) { a.prev = from; }
+            }
             if wp & 0xFFFF != 0 && a.visible && !view_open() && !chip_menu::is_open() && !tile_menu::has_keys() { SetFocus(a.input); }
             if wp & 0xFFFF == 0 {
                 chip_menu::close();

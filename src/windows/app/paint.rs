@@ -115,18 +115,49 @@ pub unsafe fn draw_logo(dc: HDC, kind: &str, x: i32, cy: i32, size: i32, color: 
     DeleteObject(pen as _);
 }
 
+/// A copy button: two stroked rounded sheets (a tick when `done`), with a soft rounded wash behind it while the pointer is on it.
+unsafe fn copy_button(dc: HDC, r: &RECT, cur: POINT, bg: u32, text: u32, muted: u32, dpi: i32, done: bool) {
+    let over = cur.x >= r.left && cur.x < r.right && cur.y >= r.top && cur.y < r.bottom;
+    let ink = if over || done { text } else { muted };
+    let sw = (1.6 * dpi as f32 / 96.0).max(1.4);
+    if over { images::smooth_round(dc, r, Some((mix_colors(bg, text, 0.14), 255)), None, 8 * dpi / 96); }
+    let (cx, cy) = ((r.left + r.right) / 2, (r.top + r.bottom) / 2);
+    let u = ((r.right - r.left) / 5).max(3);
+    if done {
+        let pen = CreatePen(PS_SOLID, sw.round() as i32, ink);
+        let old = SelectObject(dc, pen as _);
+        let pts = [POINT { x: cx - u, y: cy }, POINT { x: cx - u / 3, y: cy + u * 2 / 3 }, POINT { x: cx + u, y: cy - u * 2 / 3 }];
+        Polyline(dc, pts.as_ptr(), 3);
+        SelectObject(dc, old);
+        DeleteObject(pen as _);
+        return;
+    }
+    let rad = 4 * dpi / 96 + 2;
+    let wash = if over { mix_colors(bg, text, 0.14) } else { bg };
+    let s = r.right - r.left;
+    let (bw, o) = (s * 10 / 21, (s / 8).max(2));
+    let back = RECT { left: cx - bw / 2 + o, top: cy - bw / 2 - o, right: cx - bw / 2 + o + bw, bottom: cy - bw / 2 - o + bw };
+    let front = RECT { left: cx - bw / 2 - o, top: cy - bw / 2 + o, right: cx - bw / 2 - o + bw, bottom: cy - bw / 2 + o + bw };
+    images::smooth_round(dc, &back, None, Some((ink, 255, sw)), rad);
+    images::smooth_round(dc, &front, Some((wash, 255)), Some((ink, 255, sw)), rad);
+}
+
 /// Draws, in the small line reserved after each reply, a "Copy" link; under the newest reply it follows the speed
 /// (and the tip, if any, with its x). Drawn, never inserted, so none of it can be selected or copied with the chat.
 pub(super) unsafe fn stat_paint(view: HWND) {
     let a = app();
     TIP_CLOSE.set(RECT { left: 0, top: 0, right: 0, bottom: 0 });
     COPY_LINKS.with_borrow_mut(|l| l.clear());
+    REPLY_ZONES.with_borrow_mut(|z| z.clear());
     if a.streaming { return; }
     let stat = LAST_STAT.with_borrow(|s| s.clone());
     let tip = TIP.with_borrow(|t| t.clone());
     let mut rc: RECT = std::mem::zeroed();
     GetClientRect(view, &mut rc);
-    let (_, ends) = bubbles::marks(view);
+    let (opens, ends) = bubbles::marks(view);
+    let mut cur: POINT = std::mem::zeroed();
+    GetCursorPos(&mut cur);
+    ScreenToClient(view, &mut cur);
     let (first, last) = bubbles::visible_range(view, &rc);
     let dc = bubbles::dc_of(view);
     let dpi = GetDpiForWindow(view).max(96) as i32;
@@ -166,19 +197,19 @@ pub(super) unsafe fn stat_paint(view: HWND) {
             x += ext(&line).cx;
         }
         if tip.is_none() && has_text {
-            // "Copy" in the same small type, written as a link, after the speed when there is one.
-            if !line.is_empty() {
-                let lead = w(sep);
-                TextOutW(dc, x, p.y + 1, lead.as_ptr(), lead.len() as i32 - 1);
-                x += ext(sep).cx;
+            // The reply's zone: from just under the bubble before it to this line, so hovering anywhere on it shows the buttons.
+            let ch = ext("Copy").cy;
+            let top = opens.iter().rev().find(|&&c| c < cp).map_or(i32::MIN / 2, |&c| if c < first.saturating_sub(1) { i32::MIN / 2 } else { bubbles::char_pos(view, c).y + 3 * ch });
+            REPLY_ZONES.with_borrow_mut(|z| z.push((top, p.y + ch + 6 * dpi / 96, this)));
+            // A small copy button, drawn only while the pointer is over this reply (or for a moment after copying).
+            let done = COPY_DONE.get() && this == 0;
+            if HOVER_K.get() == Some(this) || done {
+                if !line.is_empty() { x += gap; }
+                let s = ch + 6 * dpi / 96;
+                let r = RECT { left: x, top: p.y - 3 * dpi / 96, right: x + s, bottom: p.y - 3 * dpi / 96 + s };
+                copy_button(dc, &r, cur, a.theme.bg, a.theme.text, a.theme.muted, dpi, done);
+                COPY_LINKS.with_borrow_mut(|l| l.push((r, this)));
             }
-            let word = if COPY_DONE.get() && this == 0 { "Copied" } else { "Copy" };
-            SelectObject(dc, uf as _);
-            let cw = w(word);
-            TextOutW(dc, x, p.y + 1, cw.as_ptr(), cw.len() as i32 - 1);
-            let sz = ext(word);
-            SelectObject(dc, font as _);
-            COPY_LINKS.with_borrow_mut(|l| l.push((RECT { left: x - 2, top: p.y, right: x + sz.cx + 2, bottom: p.y + sz.cy + 2 }, this)));
         }
         if tip.is_some() {
             let xx = x + gap;
@@ -187,6 +218,37 @@ pub(super) unsafe fn stat_paint(view: HWND) {
             let cs = ext("\u{00D7}");
             TIP_CLOSE.set(RECT { left: xx - 4 * dpi / 96, top: p.y, right: xx + cs.cx + 4 * dpi / 96, bottom: p.y + cs.cy + 2 });
         }
+    }
+    // Your own messages: a copy button right-aligned under the bubble, shown while the pointer is over it.
+    let pairs = opens.len() / 2;
+    let ch = 11 * dpi / 96 + 4;
+    let s = ext("Copy").cy + 6 * dpi / 96; // same size as the reply's copy button
+    let from = opens.partition_point(|&c| c < first);
+    for idx in (from - from % 2) / 2..pairs {
+        let (st, en) = (opens[idx * 2], opens[idx * 2 + 1]);
+        if en + 1 < first { continue; }
+        if st > last + 1 { break; }
+        let (tp, q) = (bubbles::char_pos(view, st), bubbles::char_pos(view, en + 1));
+        if q.y < 0 { continue; }
+        if tp.y > rc.bottom { break; }
+        let key = USER_KEY + (pairs - 1 - idx);
+        let (zt, mut zb) = (tp.y - 6 * dpi / 96, q.y + 2 * ch + s + 6 * dpi / 96);
+        if HOVER_K.get() == Some(key) {
+            // The bubble's right edge and bottom, found by walking its pixels; the button sits just under its corner.
+            let page = a.theme.bg;
+            let y = tp.y.max(0) + ch;
+            let mut x = rc.right - 1;
+            while x > 0 && GetPixel(dc, x, y) == page { x -= 1; }
+            let right = x + 1;
+            let mut by = y;
+            while by < rc.bottom - 1 && GetPixel(dc, (right - 8 * dpi / 96).max(0), by) != page { by += 1; }
+            let r = RECT { left: right - s, top: by + 3 * dpi / 96, right, bottom: by + 3 * dpi / 96 + s };
+            zb = zb.max(r.bottom + 4 * dpi / 96);
+            copy_button(dc, &r, cur, a.theme.bg, a.theme.text, a.theme.muted, dpi, false);
+            COPY_LINKS.with_borrow_mut(|l| l.push((r, key)));
+        }
+        // Your zones go first, so the reply below never takes the pointer from your button.
+        REPLY_ZONES.with_borrow_mut(|z| z.insert(0, (zt, zb, key)));
     }
     SelectObject(dc, old);
     DeleteObject(font as _);

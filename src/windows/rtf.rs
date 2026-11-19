@@ -364,7 +364,7 @@ fn markdown(out: &mut String, md: &str) {
 }
 
 /// Side padding inside a user bubble, in twips.
-const BUBBLE_PAD: usize = 150;
+const BUBBLE_PAD: usize = 230;
 
 /// Width in twips of the longest line of `text` in `font` at `size` half-points. The font is made
 /// 1 twip per unit, so the answer doesn't depend on the screen's DPI.
@@ -445,7 +445,8 @@ pub fn message(m: &Msg, th: &Theme) -> String {
             esc(&mut o, l);
         }
         if !shown.is_empty() { o.push_str("\\u8203?"); }
-        o.push_str("\\cell\\row{\\pard\\sa40\\fs8\\par}\\pard ");
+        // Room under the bubble for its copy button.
+        o.push_str("\\cell\\row{\\pard\\sa40\\fs40\\par}\\pard ");
     } else if m.role == "note" {
         note(&mut o, &m.text);
     } else if m.role == "error" {

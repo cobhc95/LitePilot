@@ -1,6 +1,6 @@
 [package]
 name = "litepilot"
-version = "0.1.60"
+version = "0.1.65"
 edition = "2021"
 
 [[bin]]

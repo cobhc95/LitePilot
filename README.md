@@ -48,7 +48,7 @@ _Version 0.1.59._
 
 Replies show text, tables, code, links, and embedded PNG, JPEG, and GIF images. Web images appear as links.
 
-The Copilot-key shortcut is on by default and registers Win+Shift+F23. Turn off **Open with the Copilot key** in Settings > Shortcut and startup to opt out. If Windows or another app owns it, normal registration fails. On Windows 11, check Settings > Personalization > Text input > Customize Copilot key on keyboard and try Search or Custom; choices vary, and this does not guarantee that Windows releases the shortcut.
+The Copilot-key shortcut is on by default and registers Win+Shift+F23. Turn off **Open with the Copilot key** in Settings > Keys and startup to opt out. If Windows or another app owns it, normal registration fails. On Windows 11, check Settings > Personalization > Text input > Customize Copilot key on keyboard and try Search or Custom; choices vary, and this does not guarantee that Windows releases the shortcut.
 
 The **global hook fallback** is also on by default and can be turned off separately in Settings. If both Copilot options are enabled and normal registration fails, LitePilot installs a system-wide low-level keyboard hook to intercept that shortcut; it passes other keys through. Security software may flag global hooks, and Windows or keyboard implementations may still prevent this from working. Existing explicit settings are preserved.
 

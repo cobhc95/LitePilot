@@ -6,23 +6,23 @@ use super::*;
 pub(super) fn page_title(p: Page) -> &'static str {
     match p {
         Page::Home => "Settings",
-        Page::Subs => "Subscriptions",
+        Page::Subs => "Accounts",
         Page::Login("claude") => "Claude",
         Page::Login("gemini") => "Gemini",
         Page::Login(_) => "ChatGPT",
         Page::Api => "API key",
         Page::Models => "Models in the menu",
-        Page::Startup => "Shortcut and startup",
-        Page::Appearance => "Appearance",
-        Page::Keys => "Keyboard shortcuts",
-        Page::Memory => "Performance and resources",
+        Page::Startup => "Keys and startup",
+        Page::Appearance => "Look and feel",
+        Page::Keys => "All keyboard shortcuts",
+        Page::Memory => "Speed and memory use",
         Page::ChatMem => "Chat memory",
         Page::ManageMem => "Manage memory",
         Page::Tidy => "Tidy memories",
         Page::ImpExp => "Import and export",
         Page::Limits => "Limits and sharing",
-        Page::Backup => "Back up and move",
-        Page::Data => "Your data",
+        Page::Backup => "Back up and move to another PC",
+        Page::Data => "Memory and data",
     }
 }
 
@@ -169,24 +169,21 @@ pub(super) fn rows_for(page: Page, st: &St, query: &str) -> Vec<Row> {
     let q = query.trim().to_lowercase();
     match page {
         Page::Home => vec![
+            row(g("\u{E77B}"), "Accounts", "Sign in with ChatGPT, Claude, Gemini, or add an API key", Kind::Nav(Page::Subs)),
+            row(g("\u{E790}"), "Look and feel", "Colors, font, text size", Kind::Nav(Page::Appearance)),
+            row(g("\u{E7E8}"), "Keys and startup", "Open shortcut, Copilot key, start with Windows, every other key", Kind::Nav(Page::Startup)),
+            row(g("\u{E8B7}"), "Memory and data", "What it remembers, where files live, back up, delete", Kind::Nav(Page::Data)),
+            row(g("\u{E9D9}"), "Speed and memory use", "Free up RAM, close the chat engine when idle", Kind::Nav(Page::Memory)),
             match crate::windows::updater::pending() {
                 Some(v) => row(g("\u{E895}"), &format!("Update {v} available"), &format!("You have LitePilot {}. Open the download page", crate::core::VERSION), Kind::Run(Run::UpdateCheck)),
                 None => row(g("\u{E895}"), "Check for updates", &format!("You have LitePilot {}. Look for a newer version now", crate::core::VERSION), Kind::Run(Run::UpdateCheck)),
             },
-            row(g("\u{E77B}"), "Subscriptions", "ChatGPT, Claude, and Gemini", Kind::Nav(Page::Subs)),
-            row(g("\u{E8D7}"), "API key", "OpenCode, DeepSeek, and others", Kind::Nav(Page::Api)),
-            row(g("\u{E7E8}"), "Shortcut and startup", "Shortcut, taskbar, Copilot key", Kind::Nav(Page::Startup)),
-            row(g("\u{E790}"), "Appearance", "Theme, colors, font, size", Kind::Nav(Page::Appearance)),
-            row(g("\u{E765}"), "Keyboard shortcuts", "Change any key", Kind::Nav(Page::Keys)),
-            row(g("\u{E9D9}"), "Performance and resources", "Compress or close the chat engine", Kind::Nav(Page::Memory)),
-            row(g("\u{E8F2}"), "Chat memory", "What LitePilot remembers about you", Kind::Nav(Page::ChatMem)),
-            row(g("\u{E8B7}"), "Your data", "Where it is, sizes, delete", Kind::Nav(Page::Data)),
-            row(g("\u{E8F1}"), "Back up and move", "Export or import your memories and settings", Kind::Nav(Page::Backup)),
         ],
         Page::Subs => vec![
             row(Icon::Chatgpt, "ChatGPT", if c.active == "codex" { "In use. Sign in with your plan" } else { "Sign in with your plan" }, Kind::Nav(Page::Login("codex"))),
             row(Icon::Claude, "Claude", if c.active == "claude" { "In use. Sign in with your plan" } else { "Sign in with your plan" }, Kind::Nav(Page::Login("claude"))),
             row(Icon::Gemini, "Gemini", if c.active == "gemini" { "In use. Sign in with your Google account" } else { "Sign in with your Google account" }, Kind::Nav(Page::Login("gemini"))),
+            row(g("\u{E8D7}"), "API key", "OpenCode, DeepSeek, OpenAI, and others", Kind::Nav(Page::Api)),
         ],
         Page::Login(k) => {
             let name = match k { "claude" => "Claude", "gemini" => "Gemini", _ => "ChatGPT" };
@@ -195,10 +192,10 @@ pub(super) fn rows_for(page: Page, st: &St, query: &str) -> Vec<Row> {
             v.push(row(g("\u{E7E8}"), "Sign out", "", Kind::Run(Run::SignOut)));
             let tool = match k { "claude" => "Claude Code", "gemini" => "Antigravity CLI", _ => "Codex" };
             let note = if k == "gemini" {
-                "Uses your Google account through the official Antigravity CLI, which keeps your sign-in safe. The first time, it downloads once (about 250 MB of disk). It stays ready between messages; change that under Performance and resources. Gemini decides for itself when to search the web. Google's terms limit third-party use of Antigravity sign-ins, so use it at your own risk. To sign out fully, type /logout in Antigravity."
+                "Uses your Google account through the official Antigravity CLI, which keeps your sign-in safe. The first time, it downloads once (about 250 MB of disk). It stays ready between messages; change that under Speed and memory use. Gemini decides for itself when to search the web. Google's terms limit third-party use of Antigravity sign-ins, so use it at your own risk. To sign out fully, type /logout in Antigravity."
             } else { "" };
             if !note.is_empty() { v.push(hint(note)); } else {
-                v.push(hint(&format!("Uses your {name} plan through the official {tool} app, which keeps your sign-in safe. The first time, it downloads once (about 330 MB of disk). It stays ready between messages; change that under Performance and resources.")));
+                v.push(hint(&format!("Uses your {name} plan through the official {tool} app, which keeps your sign-in safe. The first time, it downloads once (about 330 MB of disk). It stays ready between messages; change that under Speed and memory use.")));
             }
             v.push(row(g(toggle_meta(Tog::Web).0), toggle_meta(Tog::Web).1, "", Kind::Toggle(Tog::Web)));
             v
@@ -240,10 +237,11 @@ pub(super) fn rows_for(page: Page, st: &St, query: &str) -> Vec<Row> {
             for t in [Tog::Copilot, Tog::CopilotHook, Tog::Autostart, Tog::Blur, Tog::Taskbar, Tog::Web, Tog::Wrap, Tog::Mic, Tog::OnTop, Tog::Arrows, Tog::Updates] {
                 let m = toggle_meta(t);
                 // The dictation row shows whatever key it is bound to, never a fixed one.
-                let sub = if t == Tog::Mic { let k = keys::resolve(&c.keys).into_iter().find(|x| x.0 == "dictate").map_or("not set".to_string(), |x| keys::format(&x.1)); format!("Mic button and the {k} shortcut. Change it under Keyboard shortcuts") } else { m.2.to_string() };
+                let sub = if t == Tog::Mic { let k = keys::resolve(&c.keys).into_iter().find(|x| x.0 == "dictate").map_or("not set".to_string(), |x| keys::format(&x.1)); format!("Mic button and the {k} shortcut. Change it under All keyboard shortcuts") } else { m.2.to_string() };
                 v.push(row(g(m.0), m.1, &sub, Kind::Toggle(t)));
             }
             if !app().hotkey_warning.is_empty() { v.push(row(g("\u{E7BA}"), "Shortcut problem", &app().hotkey_warning.clone(), Kind::Info)); }
+            v.push(row(g("\u{E765}"), "All keyboard shortcuts", "Change any key", Kind::Nav(Page::Keys)));
             v
         }
         Page::Appearance => {
@@ -352,6 +350,8 @@ pub(super) fn rows_for(page: Page, st: &St, query: &str) -> Vec<Row> {
             let facts = if st.mem.is_empty() { "None".to_string() } else { format!("{} facts", st.mem.len()) };
             let armed = |i: u8, idle: &str| if st.wipe_armed == Some(i) { "Press Enter again to delete".to_string() } else { idle.to_string() };
             vec![
+                row(g("\u{E8F2}"), "Chat memory", "What LitePilot remembers about you", Kind::Nav(Page::ChatMem)),
+                row(g("\u{E8F1}"), "Back up and move to another PC", "Export or import your memories and settings", Kind::Nav(Page::Backup)),
                 row(g("\u{E8B7}"), "Data folder", &d.to_string_lossy(), Kind::Info),
                 row(g("\u{E838}"), "Open folder", "", Kind::Run(Run::DataOpen)),
                 row(g("\u{E8C8}"), "Copy path", "", Kind::Run(Run::DataCopy)),
@@ -395,7 +395,7 @@ pub(super) fn build_rows(st: &St) -> Vec<Row> {
                 v.push(row(Icon::G("\u{E713}"), &title, &whr, Kind::Jump(p, i)));
             }
         }
-        // A row whose own name holds the whole search comes first ("chat memory" before "Performance and resources").
+        // A row whose own name holds the whole search comes first ("chat memory" before "Speed and memory use").
         let whole = q.split_whitespace().collect::<Vec<_>>().join(" ");
         v.sort_by_key(|r| !r.title.to_lowercase().contains(&whole));
         if v.is_empty() { v.push(row(Icon::G(""), "", "No matching settings", Kind::Hint)); }

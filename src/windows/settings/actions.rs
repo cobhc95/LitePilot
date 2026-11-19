@@ -379,7 +379,7 @@ pub(super) fn go_back(h: HWND, st: &mut St) {
     if st.page == Page::Home { unsafe { PostMessageW(h, WM_CLOSE, 0, 0); } return; }
     // Back lands on the item that was opened, one level up.
     let from = st.page;
-    let parent = if from == Page::Models { Page::Api } else if matches!(from, Page::Login(_)) { Page::Subs } else if matches!(from, Page::ManageMem | Page::Tidy | Page::ImpExp | Page::Limits) { Page::ChatMem } else { Page::Home };
+    let parent = if from == Page::Models { Page::Api } else if from == Page::Api { Page::Subs } else if from == Page::Keys { Page::Startup } else if matches!(from, Page::ChatMem | Page::Backup) { Page::Data } else if matches!(from, Page::Login(_)) { Page::Subs } else if matches!(from, Page::ManageMem | Page::Tidy | Page::ImpExp | Page::Limits) { Page::ChatMem } else { Page::Home };
     if parent == Page::ChatMem { st.mem = memory_store::load(&app::mem_dir()); }
     let sel = rows_for(parent, st, "").iter().filter(|r| r.kind.selectable()).position(|r| matches!(r.kind, Kind::Nav(p) if p == from)).unwrap_or(0);
     goto(st, parent, sel);

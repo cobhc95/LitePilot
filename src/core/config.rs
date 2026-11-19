@@ -34,6 +34,7 @@ pub const FONTS: &[&str] = &["Segoe UI", "Calibri", "Arial", "Verdana", "Tahoma"
 
 /// Name, background, text, accent. Only three colors each: the rest are derived.
 pub const PALETTES: &[(&str, u32, u32, u32)] = &[
+    ("Carbon", 0x161616, 0xECECEC, 0x78A9FF),
     ("Midnight", 0x11161F, 0xE6EAF0, 0x7AA2F7),
     ("Graphite", 0x1E1E1E, 0xEDEDED, 0xE0A458),
     ("Forest", 0x18261F, 0xE8F0EA, 0x7BC89C),
@@ -137,7 +138,7 @@ impl Default for Config {
             hotkey: "Alt+Space".into(),
             copilot_key: true,
             copilot_hook_fallback: true,
-            start_with_windows: false,
+            start_with_windows: true,
             hide_on_blur: false,
             dictation: false,
             trim_idle: true,
@@ -158,7 +159,7 @@ impl Default for Config {
             theme: "system".into(),
             font: "Segoe UI".into(),
             text_size: "medium".into(),
-            palette: "Midnight".into(),
+            palette: "Carbon".into(),
             custom: ["#26303A".into(), "#F1F3F5".into(), "#85B7EB".into()],
             window_pos: None,
             window_size: None,
@@ -202,7 +203,7 @@ impl Config {
             hotkey: st("hotkey", &d.hotkey),
             copilot_key: v["copilot_key"].as_bool().unwrap_or(d.copilot_key),
             copilot_hook_fallback: v["copilot_hook_fallback"].as_bool().unwrap_or(d.copilot_hook_fallback),
-            start_with_windows: v["start_with_windows"].as_bool().unwrap_or(false),
+            start_with_windows: v["start_with_windows"].as_bool().unwrap_or(true),
             hide_on_blur: v["hide_on_blur"].as_bool().unwrap_or(false),
             dictation: v["dictation"].as_bool().unwrap_or(false),
             trim_idle: v["trim_idle"].as_bool().unwrap_or(true),

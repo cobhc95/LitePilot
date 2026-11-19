@@ -97,7 +97,7 @@ fn mem_help(st: &St) -> String {
         Some(Kind::Pick(Pick::MemLimit)) => "The most facts LitePilot will keep. \u{2190} \u{2192} change; lowering it never deletes facts you already have.".into(),
         Some(Kind::Nav(Page::ImpExp)) => "Bring facts in from the clipboard, get the prompt that asks an AI for its facts, or save a text file to Downloads.".into(),
         Some(Kind::Nav(Page::Tidy)) => "Off by default. Uses a model you choose to merge repeated facts, after you review them.".into(),
-        Some(Kind::Nav(Page::Subs)) => "Sign in to ChatGPT, Claude, or Gemini with your plan or Google account.".into(),
+        Some(Kind::Nav(Page::Subs)) => "Sign in to ChatGPT, Claude, or Gemini with your plan or Google account, or add an API key.".into(),
         Some(Kind::Nav(Page::Limits)) => "The most facts kept, and whether every account shares one list.".into(),
         Some(Kind::Nav(Page::ManageMem)) => "See what is remembered, search it, delete one, or clear everything.".into(),
         Some(Kind::Nav(Page::Models)) => "Choose which of this provider's models appear in the model menu, so the list stays short.".into(),

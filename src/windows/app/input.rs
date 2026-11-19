@@ -104,7 +104,7 @@ pub(super) unsafe extern "system" fn child_proc(h: HWND, msg: u32, wp: WPARAM, l
         CallWindowProcW(std::mem::transmute::<isize, WNDPROC>(a.old_view), h, 0x0318, mem as usize, 4 | 8); // WM_PRINTCLIENT: PRF_CLIENT | PRF_ERASEBKGND
         perf_lap("text");
         bubbles::begin(mem);
-        bubbles::paint(h, a.theme.bg, rtf::cell_shade(a.theme.bubble));
+        bubbles::paint(h, a.theme.bg, rtf::cell_shade(a.theme.bubble), a.theme.accent, a.theme.text);
         perf_lap("bubbles");
         images::paint(h, pic_colors(a));
         perf_lap("images");
@@ -223,7 +223,7 @@ pub(super) unsafe extern "system" fn child_proc(h: HWND, msg: u32, wp: WPARAM, l
                 return 1;
             }
         }
-        if images::over_control(pt.x, pt.y) {
+        if images::over_control(pt.x, pt.y) || copy_link_hit(pt.x, pt.y).is_some() {
             SetCursor(LoadCursorW(std::ptr::null_mut(), IDC_HAND));
             return 1;
         }
@@ -259,6 +259,23 @@ pub(super) unsafe extern "system" fn child_proc(h: HWND, msg: u32, wp: WPARAM, l
     if msg == WM_DROPFILES { attach_win::dropped(wp as HANDLE); windows_sys::Win32::UI::Shell::DragFinish(wp as HANDLE); return 0; }
     if msg == WM_LBUTTONDOWN && !is_input && tip_close_hit((lp & 0xFFFF) as i16 as i32, ((lp >> 16) & 0xFFFF) as i16 as i32) { dismiss_tip(); return 0; }
     if msg == WM_LBUTTONDOWN && !is_input { if let Some(k) = copy_link_hit((lp & 0xFFFF) as i16 as i32, ((lp >> 16) & 0xFFFF) as i16 as i32) { copy_link_click(k); return 0; } }
+    if !is_input && msg == WM_MOUSEMOVE && DRAG_Y.get().is_none() {
+        // The pointer over a reply shows that reply's buttons (like Claude's); repaints only when the reply changes.
+        let y = (lp >> 16) as i16 as i32;
+        let k = REPLY_ZONES.with_borrow(|z| z.iter().find(|(t, b, _)| y >= *t && y < *b).map(|z| z.2));
+        if k != HOVER_K.get() {
+            HOVER_K.set(k);
+            if k.is_some() {
+                let mut t = TRACKMOUSEEVENT { cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32, dwFlags: TME_LEAVE, hwndTrack: h, dwHoverTime: 0 };
+                TrackMouseEvent(&mut t);
+            }
+            InvalidateRect(h, std::ptr::null(), 0);
+        }
+    }
+    if !is_input && msg == WM_MOUSELEAVE_ && HOVER_K.get().is_some() {
+        HOVER_K.set(None);
+        InvalidateRect(h, std::ptr::null(), 0);
+    }
     if !is_input {
         // A click on a picture tile opens the viewer; on a row's arrow, pages the row.
         if msg == WM_LBUTTONDOWN && images::click(h, (lp & 0xFFFF) as i16 as i32, ((lp >> 16) & 0xFFFF) as i16 as i32, pic_colors(a)) { return 0; }
