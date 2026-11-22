@@ -61,7 +61,7 @@ The **global hook fallback** is also on by default and can be turned off separat
 
 LitePilot keeps a short list of facts about you and uses them in every chat, on every account.
 
-- **Add and remove in chat:** "remember that I live in Colchester", "forget that ...". Ctrl+Shift+Z undoes the last change. Only you add memories, never the AI, and anything that looks like a password or key is refused.
+- **Add and remove in chat:** "remember that I prefer short answers", "forget that ...". Ctrl+Shift+Z undoes the last change. Only you add memories, never the AI, and anything that looks like a password or key is refused.
 - **Stored safely:** the list is encrypted with Windows' own protection and lives in LitePilot's folder. Up to 2000 facts (changeable).
 - **Memory mode** (Settings > Chat memory), the same for every account:
   - **Engine** (ChatGPT and Claude sign-in): facts plus the AI's own memory. Claude saves personal facts in LitePilot's folder. Codex learns from saved chats at least an hour after they end, using a little of your plan.
