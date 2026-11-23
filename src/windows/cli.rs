@@ -128,6 +128,7 @@ pub fn refresh_muse_models() {
         let mut buf = BufReader::new(out);
         let mut line = String::new();
         let mut send = |s: &str| { let _ = stdin.write_all(s.as_bytes()); let _ = stdin.flush(); };
+        send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"clientInfo\":{\"name\":\"litepilot\",\"version\":\"1\"}}}\n");
         // Wait for the initialize answer (skipping any notifications), then ask for the models.
         loop {
             line.clear();
@@ -476,6 +477,21 @@ pub use super::resident::{set_diag_tools, set_memory_tool, claude_memory_dir, co
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    #[ignore = "needs a signed-in Muse on this machine"]
+    fn muse_catalog_lists_models() {
+        eprintln!("find muse: {:?}", super::find_muse());
+        eprintln!("signed in: {}", super::is_signed_in("meta"));
+        super::refresh_muse_models();
+        let mut got = vec![];
+        for _ in 0..40 {
+            got = super::muse_models();
+            if !got.is_empty() { break }
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+        eprintln!("models: {got:?}");
+        assert!(!got.is_empty(), "catalog empty");
+    }
     #[test]
     #[ignore = "downloads the current OpenAI Codex package"]
     fn installs_official_codex_without_junctions() {
