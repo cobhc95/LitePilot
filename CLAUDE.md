@@ -1,5 +1,8 @@
 # Rules for every agent working on LitePilot
 
+## Always verify internally first (added 2026-11-23)
+Never report a fix as done without proving it inside this machine first: run the relevant path (test, e2e, or a live probe) and check the output. In particular, don't ship a version bump whose only evidence is that it compiled.
+
 ## After every fix or change (do this without asking)
 1. **Bump the version** (patch) in `Cargo.toml`. It is the only place the version lives.
 2. **Build** with `build-release.cmd` (runs the tests, then makes `dist\LitePilot-<version>-Setup.exe` and `-Portable.zip`).
