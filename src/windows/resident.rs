@@ -124,7 +124,8 @@ fn start_reaper() {
             match g.as_mut() {
                 None => {}
                 Some(s) if idle_kill().is_some_and(|d| s.last.elapsed() >= d) => { if let Some(s) = g.take() { s.kill(); } }
-                Some(s) if TRIM.load(Ordering::SeqCst) && s.last.elapsed() >= Duration::from_secs(TRIM_AFTER.load(Ordering::SeqCst)) && !s.trimmed => { s.trimmed = true; trim(s.job); any = true; }
+                // Muse stays resident: trimming its pages costs more on the next turn than it saves.
+                Some(s) if s.kind != "meta" && TRIM.load(Ordering::SeqCst) && s.last.elapsed() >= Duration::from_secs(TRIM_AFTER.load(Ordering::SeqCst)) && !s.trimmed => { s.trimmed = true; trim(s.job); any = true; }
                 Some(_) => any = true,
             }
         }
@@ -334,7 +335,11 @@ fn ensure_thread(s: &mut Server, cwd: &Path, system: &str) -> Result<(), String>
         let r = s.call("session/start", params)?;
         let Some(id) = r["session"]["sessionId"].as_str().map(String::from) else { return Err("Meta didn't start a conversation. Try Sign in from Settings.".into()) };
         s.thread = Some(id);
-        super::cli::refresh_muse_models();
+        // The menu's catalog rides the live server's model/list: no second process to spawn.
+        if let Ok(v) = s.call("model/list", json!({})) {
+            let list: Vec<String> = v["result"]["models"].as_array().map(|a| a.iter().filter_map(|m| m["modelId"].as_str().map(String::from)).collect()).unwrap_or_default();
+            super::cli::store_muse_models(list);
+        }
         // No flag replaces Muse's own instructions, so LitePilot's go in front of the first message.
         s.intro = Some(system.to_string());
         return Ok(());

@@ -154,12 +154,17 @@ pub fn refresh_muse_models() {
         }
         let _ = child.kill();
         let _ = child.wait();
-        if list.is_empty() { return; }
-        let _ = std::fs::create_dir_all(muse_dir());
-        let _ = std::fs::write(muse_dir().join("models.json"), serde_json::to_string(&list).unwrap_or_default());
-        *MUSE_MODELS.lock().unwrap_or_else(|e| e.into_inner()) = list;
-        *MUSE_MODELS_AT.lock().unwrap_or_else(|e| e.into_inner()) = Some(std::time::Instant::now());
+        store_muse_models(list);
     });
+}
+
+/// Records a catalog read from the live server (no second process).
+pub fn store_muse_models(list: Vec<String>) {
+    if list.is_empty() { return; }
+    let _ = std::fs::create_dir_all(muse_dir());
+    let _ = std::fs::write(muse_dir().join("models.json"), serde_json::to_string(&list).unwrap_or_default());
+    *MUSE_MODELS.lock().unwrap_or_else(|e| e.into_inner()) = list;
+    *MUSE_MODELS_AT.lock().unwrap_or_else(|e| e.into_inner()) = Some(std::time::Instant::now());
 }
 
 /// A command that runs the CLI `kind`. None when it isn't installed.
