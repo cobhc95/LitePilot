@@ -47,6 +47,7 @@ fn usage_kind() -> Option<&'static str> {
     match p.kind.as_str() {
         "claude" => Some("claude"),
         "codex" => Some("codex"),
+        "meta" => Some("meta"),
         // Gemini counts Claude and GPT models against their own limits.
         "gemini" => Some(if p.model.starts_with("claude-") || p.model.starts_with("gpt-") { "gemini-3p" } else { "gemini" }),
         _ => None,
@@ -90,6 +91,7 @@ fn s(v: i32) -> i32 { v * unsafe { GetDpiForWindow(app().hwnd).max(96) } as i32 
 fn describe(slug: &str, name: &str) -> (String, &'static str) {
     if slug.is_empty() { return ("DEFAULT".into(), ""); }
     let label = if name.eq_ignore_ascii_case(slug) && slug.starts_with("gpt-") { slug.trim_start_matches("gpt-").to_uppercase() }
+        else if slug.starts_with("muse-") { name.to_uppercase() }
         else if slug.starts_with("gemini-") { slug.trim_start_matches("gemini-").to_uppercase() } else { slug.to_uppercase() };
     let l = label.to_lowercase();
     let current_gen = !l.starts_with("5.") && !l.starts_with("4");
@@ -116,6 +118,7 @@ fn icon(label: &str, slug: &str, muted: u32) -> (Ic, u32) {
     if l == "default" { (Ic::Glyph("\u{E9F5}"), muted) }
     else if s.contains("orchestrator") { (Ic::Glyph("\u{E902}"), gem) }
     else if s.starts_with("gemini-") { (Ic::Logo("gemini"), gem) }
+    else if s.starts_with("muse-") { (Ic::Logo("meta"), 0xFB8200) }
     else if s.starts_with("claude-") { (Ic::Logo("claude"), 0x5777D9) }
     else if s.starts_with("gpt-oss") { (Ic::Logo("codex"), muted) }
     else if l.contains("luna") { (Ic::Glyph("\u{E708}"), 0x3DD3FF) }

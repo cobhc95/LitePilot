@@ -27,7 +27,7 @@ pub fn choices(profiles: &[Profile]) -> Vec<(String, String, String)> {
         } else if p.kind == "gemini" {
             // Not offered: Antigravity's one-shot mode can't take a long list on stdin.
         } else if p.kind == "meta" {
-            // Not offered: Meta chat isn't connected yet.
+            // Not offered: tidy runs a one-shot CLI, which Muse doesn't speak (chat is turn-based).
         } else if p.kind == "codex" {
             for m in cli::codex_models() { out.push((p.id.clone(), m.clone(), format!("{} \u{00B7} {}", p.name, m.trim_start_matches("gpt-")))); }
         } else if !p.model.is_empty() {

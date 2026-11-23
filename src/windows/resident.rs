@@ -200,6 +200,10 @@ fn spawn(kind: &str, model: &str, effort: &str, search: bool, memory: &str, engi
         // Google Antigravity's Agent Client Protocol: JSON-RPC over stdio, like Codex's app-server. It never
         // grants a tool (permission asks are cancelled). The model is chosen per conversation (set_model).
         c.args(["acp", "--disable-telemetry"]);
+    } else if kind == "meta" {
+        // Meta Muse Code's session protocol (MSP): JSON-RPC over stdio. Auth stays inside the official CLI;
+        // tools are never granted (`denyUnmatched` at session start; any stray ask is declined).
+        c.args(["serve"]);
     } else {
         c.arg("app-server");
         // Chat only: nothing that starts helper processes or takes memory for tools this app never uses.
@@ -240,8 +244,15 @@ fn spawn(kind: &str, model: &str, effort: &str, search: bool, memory: &str, engi
     Some(Server { child, stdin, out: BufReader::new(stdout), job, kind: kind.into(), cfg, thread: None, known: (0, rpc::hash(&[])), last: Instant::now(), trimmed: false, next_id: 0, engine, model: if kind == "gemini" { super::cli::gemini_resolve(model, effort) } else { model.to_string() }, intro: None })
 }
 
-/// Codex: initialize the protocol once per process.
+/// Codex / Gemini / Muse: initialize the protocol once per process.
 fn handshake(s: &mut Server) -> Result<(), String> {
+    if s.kind == "meta" {
+        // Without a sign-in the CLI would open a browser and wait; say so instead.
+        if !super::cli::is_signed_in("meta") { return Err("Not signed in yet. Open Settings, then Accounts, then Meta, and click Sign in.".into()); }
+        s.call("initialize", json!({"clientInfo": {"name": "litepilot", "version": "1"}}))?;
+        s.send(&rpc::notification("initialized"));
+        return Ok(());
+    }
     if s.kind == "gemini" {
         // Without a sign-in the CLI would open a browser and wait; say so instead.
         if !super::cli::is_signed_in("gemini") { return Err("Not signed in yet. Open Settings, then Accounts, then Gemini, and click Sign in.".into()); }
@@ -316,6 +327,18 @@ fn message_end(line: &str) -> Option<(u64, bool)> {
 /// The conversation inside a running Codex: made once, then reused for every message that follows on from it.
 fn ensure_thread(s: &mut Server, cwd: &Path, system: &str) -> Result<(), String> {
     if s.thread.is_some() { return Ok(()); }
+    if s.kind == "meta" {
+        // One Muse session per process; the model is chosen at session start, the effort per turn.
+        let mut params = json!({"commandId": uuid7(), "workspaceRoot": cwd, "approvalMode": "denyUnmatched"});
+        if !s.model.is_empty() { params["modelId"] = s.model.clone().into(); }
+        let r = s.call("session/start", params)?;
+        let Some(id) = r["session"]["sessionId"].as_str().map(String::from) else { return Err("Meta didn't start a conversation. Try Sign in from Settings.".into()) };
+        s.thread = Some(id);
+        super::cli::refresh_muse_models();
+        // No flag replaces Muse's own instructions, so LitePilot's go in front of the first message.
+        s.intro = Some(system.to_string());
+        return Ok(());
+    }
     if s.kind == "gemini" {
         let r = s.call("session/new", json!({"cwd": cwd, "mcpServers": []}))?;
         let Some(id) = r["sessionId"].as_str().map(String::from) else { return Err("Gemini didn't start a conversation. Try Sign in from Settings.".into()) };
@@ -346,6 +369,7 @@ fn cfg_key_with(kind: &str, model: &str, effort: &str, search: bool, memory: &st
     // Gemini keeps one process for good: the model and effort are changed inside the running conversation
     // (see turn_gemini), and nothing else about a message changes how it runs.
     if kind == "gemini" { String::new() }
+    else if kind == "meta" { format!("{model}|{search}|{m:x}|{engine}") }
     else if kind == "claude" { format!("{model}|{effort}|{search}|{m:x}|{engine}") } else { format!("{search}|{m:x}|{engine}") }
 }
 
@@ -378,7 +402,6 @@ fn system_with(search: bool, standing: &str, diag: bool) -> String {
 /// (a new or different chat was opened), when a clean one is made ready for it. Does nothing during a reply.
 #[allow(clippy::too_many_arguments)]
 pub fn warm(kind: &str, model: &str, effort: &str, search: bool, memory: &str, engine: bool, cwd: &Path, fresh: bool, spare_standing: Option<String>) {
-    if kind == "meta" { return; } // Meta chat isn't connected yet; sign-in only.
     if super::cli::find(kind).is_none() { return; }
     if let (false, Some(st)) = (search, spare_standing) { ensure_spare(kind, model, effort, st, engine, cwd); }
     let (kind, model, effort, memory, cwd) = (kind.to_string(), model.to_string(), effort.to_string(), memory.to_string(), cwd.to_path_buf());
@@ -391,7 +414,7 @@ pub fn warm(kind: &str, model: &str, effort: &str, search: bool, memory: &str, e
             if !fresh && (same || busy) { return; }
             if same && !busy && (kind == "claude" || s.thread.is_some()) { return; }
             // Codex: same process, just a new conversation made ready now instead of at the first message.
-            if same && (kind == "codex" || kind == "gemini") {
+            if same && (kind == "codex" || kind == "gemini" || kind == "meta") {
                 s.thread = None;
                 s.known = (0, rpc::hash(&[]));
                 if ensure_thread(s, &cwd, &system_for(search, &memory)).is_err() { if let Some(s) = g.take() { s.kill(); } }
@@ -400,7 +423,7 @@ pub fn warm(kind: &str, model: &str, effort: &str, search: bool, memory: &str, e
         }
         if let Some(s) = g.take() { s.kill(); }
         let Some(mut s) = spawn(&kind, &model, &effort, search, &memory, engine, &cwd, cfg, false) else { return };
-        if (kind == "codex" || kind == "gemini") && (handshake(&mut s).is_err() || ensure_thread(&mut s, &cwd, &system_for(search, &memory)).is_err()) { s.kill(); return; }
+        if (kind == "codex" || kind == "gemini" || kind == "meta") && (handshake(&mut s).is_err() || ensure_thread(&mut s, &cwd, &system_for(search, &memory)).is_err()) { s.kill(); return; }
         JOB.store(s.job as isize, Ordering::SeqCst);
         *g = Some(s);
         start_reaper();
@@ -443,7 +466,39 @@ fn build_spare(kind: &str, model: &str, effort: &str, standing: &str, engine: bo
     }
 }
 
-fn engine_name(kind: &str) -> &'static str { match kind { "claude" => "Claude", "gemini" => "Gemini", _ => "ChatGPT" } }
+fn engine_name(kind: &str) -> &'static str { match kind { "claude" => "Claude", "gemini" => "Gemini", "meta" => "Meta", _ => "ChatGPT" } }
+
+/// An idempotency handle for Muse's wire protocol: a UUIDv7 (millisecond time, then random bits).
+fn uuid7() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static N: AtomicU64 = AtomicU64::new(0);
+    let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
+    let mut x = ms.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ ((std::process::id() as u64) << 32) ^ N.fetch_add(0x9E37_79B9_7F4A_7C15, Ordering::Relaxed);
+    let mut rand = move || { x ^= x << 13; x ^= x >> 7; x ^= x << 17; x };
+    let (r1, r2) = (rand(), rand());
+    let mut b = [0u8; 16];
+    b[0..6].copy_from_slice(&ms.to_be_bytes()[2..8]);
+    b[6] = 0x70 | ((r1 >> 12) as u8 & 0x0F);
+    b[7] = (r1 >> 4) as u8;
+    b[8] = 0x80 | ((r1) as u8 & 0x3F);
+    b[9] = (r2 >> 56) as u8;
+    b[10] = (r2 >> 48) as u8;
+    b[11] = (r2 >> 40) as u8;
+    b[12] = (r2 >> 32) as u8;
+    b[13] = (r2 >> 24) as u8;
+    b[14] = (r2 >> 16) as u8;
+    b[15] = (r2 >> 8) as u8;
+    let h = |r: &[u8]| r.iter().map(|v| format!("{v:02x}")).collect::<String>();
+    format!("{}-{}-{}-{}-{}", h(&b[0..4]), h(&b[4..6]), h(&b[6..8]), h(&b[8..10]), h(&b[10..16]))
+}
+
+/// Muse's plan usage from a `usage/changed` notification: the 5-hour and weekly windows.
+fn muse_usage(p: &Value) -> Option<crate::core::usage::Usage> {
+    use crate::core::usage::{Usage, Window};
+    let win = |w: &Value| w["usedPercent"].as_f64().map(|u| Window { used: u, resets: w["resetsAtMs"].as_i64().unwrap_or(0) / 1000 });
+    let u = Usage { five_hour: win(&p["window"]), week: win(&p["weekly"]), at: crate::core::usage::now() };
+    (u.five_hour.is_some() || u.week.is_some()).then_some(u)
+}
 
 fn turn_gemini(s: &mut Server, model: &str, prompt: &str, cwd: &Path, system: &str, sink: &dyn Fn(Event)) -> Option<String> {
     let fail = |m: String| { sink(Event::Error(m)); None };
@@ -522,11 +577,71 @@ fn turn_codex(s: &mut Server, model: &str, effort: &str, prompt: &str, media: &[
     }
 }
 
+/// Meta (Muse): one turn on the session, streamed as item deltas; only the agent message is shown.
+#[allow(clippy::too_many_arguments)]
+fn turn_muse(s: &mut Server, effort: &str, prompt: &str, media: &[PathBuf], cwd: &Path, system: &str, sink: &dyn Fn(Event)) -> Option<String> {
+    let fail = |m: String| { sink(Event::Error(m)); None };
+    if let Err(e) = ensure_thread(s, cwd, system) { return fail(e); }
+    let prompt = match s.intro.take() { Some(i) if !i.trim().is_empty() => format!("{i}\n\n---\n\n{prompt}"), _ => prompt.to_string() };
+    let mut input = vec![json!({"type": "text", "text": prompt})];
+    for m in media.iter().filter(|m| m.extension().is_some_and(|e| !e.eq_ignore_ascii_case("pdf"))) {
+        let n = m.file_name().and_then(|v| v.to_str()).unwrap_or_default();
+        let crate::core::attach::Kind::Image(mime) = crate::core::attach::kind(n) else { continue };
+        let Ok(data) = std::fs::read(m) else { continue };
+        input.push(json!({"type": "image", "mediaType": mime, "base64Data": crate::core::attach::b64(&data)}));
+    }
+    let mut params = json!({"commandId": uuid7(), "sessionId": s.thread, "input": input});
+    if !effort.is_empty() { params["reasoningEffort"] = effort.into(); }
+    s.next_id += 1;
+    let id = s.next_id;
+    if !s.send(&rpc::request(id, "turn/start", params)) { return fail(STOPPED.into()); }
+    sink(Event::Phase("Waiting for Meta".into()));
+    let (mut reply, mut agent_item) = (String::new(), None::<String>);
+    loop {
+        let Some(l) = s.line() else { return fail(STOPPED.into()) };
+        let Ok(v) = serde_json::from_str::<Value>(&l) else { continue };
+        match v["method"].as_str() {
+            Some("usage/changed") => { if let Some(u) = muse_usage(&v["params"]) { crate::core::usage::set("meta", u); } }
+            Some("item/started") if v["params"]["item"]["kind"] == "agentMessage" => { agent_item = v["params"]["item"]["itemId"].as_str().map(String::from); }
+            Some("item/delta") => {
+                let f = v["params"]["field"].as_str().unwrap_or("text");
+                if agent_item.as_deref() == v["params"]["itemId"].as_str() && (f == "text" || f.is_empty()) {
+                    if let Some(d) = v["params"]["delta"].as_str() { reply.push_str(d); sink(Event::Text(d.into())); }
+                }
+            }
+            Some("item/completed") => {
+                let it = &v["params"]["item"];
+                // The completed item is authoritative, so text that missed a delta is still delivered.
+                if it["kind"] == "agentMessage" && reply.is_empty() {
+                    if let Some(t) = it["text"].as_str().filter(|t| !t.is_empty()) { reply.push_str(t); sink(Event::Text(t.into())); }
+                }
+            }
+            Some("turn/completed") => {
+                let p = &v["params"];
+                if let Some(u) = p["usage"].as_object() {
+                    let n: u64 = ["inputTokens", "outputTokens"].iter().filter_map(|k| u[*k].as_u64()).sum();
+                    if n > 0 { sink(Event::Tokens(n)); }
+                }
+                return match p["terminal"].as_str().unwrap_or("") {
+                    "completed" => { sink(Event::Done); Some(reply) }
+                    _ => fail(p["error"]["message"].as_str().map(String::from).or_else(|| p["reason"].as_str().map(String::from)).unwrap_or_else(|| "Meta reported an error".into())),
+                };
+            }
+            Some(_) => { if !v["id"].is_null() { s.send(&rpc::decline(&v["id"])); } }
+            None => {
+                // The turn/start answer itself: anything but accepted ends the turn here.
+                if v["id"].as_u64() == Some(id) {
+                    if let Some(e) = v["error"]["message"].as_str() { return fail(e.into()); }
+                }
+            }
+        }
+    }
+}
+
 /// Sends the last of `turns` to the resident CLI, starting or restarting it when needed. When the CLI already
 /// holds the earlier turns only the new message goes; otherwise the whole conversation is sent again.
 #[allow(clippy::too_many_arguments)]
 pub fn run(kind: &str, model: &str, effort: &str, search: bool, memory: &str, engine: bool, turns: &[Msg], extra: &str, media: &[PathBuf], cwd: &Path, sink: &dyn Fn(Event)) {
-    if kind == "meta" { return sink(Event::Error("Meta chat isn't connected yet. Open Settings, then Accounts, then Meta to sign in.".into())); }
     if super::cli::find(kind).is_none() { return sink(Event::Error("Not signed in yet. Open Settings and click Sign in.".into())); }
     let Some(last) = turns.last() else { return };
     let prev = &turns[..turns.len() - 1];
@@ -545,7 +660,7 @@ pub fn run(kind: &str, model: &str, effort: &str, search: bool, memory: &str, en
     if g.is_none() {
         sink(Event::Phase(format!("Starting {}", engine_name(kind))));
         let Some(mut s) = spawn(kind, model, effort, search, memory, engine, cwd, cfg, false) else { return sink(Event::Error("Could not start the CLI.".into())) };
-        if kind == "codex" || kind == "gemini" {
+        if kind == "codex" || kind == "gemini" || kind == "meta" {
             if let Err(e) = handshake(&mut s) { s.kill(); return sink(Event::Error(e)); }
         }
         JOB.store(s.job as isize, Ordering::SeqCst);
@@ -560,7 +675,7 @@ pub fn run(kind: &str, model: &str, effort: &str, search: bool, memory: &str, en
     if kind != "claude" && s.thread.is_none() { sink(Event::Phase("Starting a conversation".into())); }
     let prompt = format!("{}{extra}", if sync { last.text.clone() } else { flatten_prompt(turns) });
     let system = system_for(search, memory);
-    let reply = if kind == "claude" { turn_claude(s, &prompt, media, sink) } else if kind == "gemini" { turn_gemini(s, &super::cli::gemini_resolve(model, effort), &prompt, cwd, &system, sink) } else { turn_codex(s, model, effort, &prompt, media, cwd, &system, sink) };
+    let reply = if kind == "claude" { turn_claude(s, &prompt, media, sink) } else if kind == "gemini" { turn_gemini(s, &super::cli::gemini_resolve(model, effort), &prompt, cwd, &system, sink) } else if kind == "meta" { turn_muse(s, effort, &prompt, media, cwd, &system, sink) } else { turn_codex(s, model, effort, &prompt, media, cwd, &system, sink) };
     match reply {
         Some(text) => {
             let mut all = turns.to_vec();
@@ -575,6 +690,24 @@ pub fn run(kind: &str, model: &str, effort: &str, search: bool, memory: &str, en
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn muse_ids_are_v7_and_usage_maps() {
+        for _ in 0..16 {
+            let id = super::uuid7();
+            let b: Vec<&str> = id.split('-').collect();
+            assert_eq!(b.len(), 5);
+            assert_eq!(b[2].len(), 4);
+            assert!(b[2].starts_with('7'), "version nibble: {id}");
+            assert!(b[3].starts_with(['8', '9', 'a', 'b']), "variant bits: {id}");
+        }
+        assert_ne!(super::uuid7(), super::uuid7());
+        let v = serde_json::json!({"window": {"usedPercent": 82, "windowDurationMins": 300, "resetsAtMs": 1795480459000_i64}, "weekly": {"usedPercent": 35, "resetsAtMs": 1795996800000_i64}});
+        let u = super::muse_usage(&v).unwrap();
+        assert_eq!(u.five_hour.unwrap().used, 82.0);
+        assert_eq!(u.five_hour.unwrap().resets, 1795480459);
+        assert_eq!(u.week.unwrap().used, 35.0);
+        assert!(super::muse_usage(&serde_json::json!({})).is_none());
+    }
     #[test]
     fn fast_tier_only_where_it_costs_nothing_extra() {
         let v = serde_json::json!({"data": [

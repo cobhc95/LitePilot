@@ -87,6 +87,77 @@ fn muse_auth_file() -> PathBuf {
     env_path("USERPROFILE", r".config\muse\auth.json")
 }
 
+// ---- Muse models, from `muse serve model/list` (kept in memory and in a small file). ----
+
+static MUSE_MODELS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+static MUSE_MODELS_AT: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+
+fn muse_dir() -> PathBuf { env_path("LOCALAPPDATA", r"LitePilot\Muse") }
+
+/// The model's short name for menus: `muse-wonder-1.0` becomes `Wonder`, `muse-spark-1.3` becomes `Spark`.
+pub fn muse_label(id: &str) -> String {
+    let t = id.strip_prefix("muse-").unwrap_or(id);
+    let w: String = t.chars().take_while(|c| c.is_ascii_alphabetic()).collect();
+    let w = if w.is_empty() { t.to_string() } else { w };
+    let mut c = w.chars();
+    match c.next() { Some(f) => f.to_uppercase().collect::<String>() + &c.as_str().to_lowercase(), None => w.clone() }
+}
+
+/// What `muse serve model/list` last reported (kept in memory and in a small file). Empty until the first check.
+pub fn muse_models() -> Vec<String> {
+    let mut g = MUSE_MODELS.lock().unwrap_or_else(|e| e.into_inner());
+    if g.is_empty() {
+        if let Some(v) = std::fs::read_to_string(muse_dir().join("models.json")).ok().and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok()) { *g = v; }
+    }
+    g.clone()
+}
+
+/// Asks `muse serve model/list` in the background, at most once an hour (and once per launch), once signed in.
+pub fn refresh_muse_models() {
+    {
+        let mut at = MUSE_MODELS_AT.lock().unwrap_or_else(|e| e.into_inner());
+        if at.is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(3600)) || !is_signed_in("meta") { return; }
+        *at = Some(std::time::Instant::now());
+    }
+    std::thread::spawn(|| {
+        use std::io::{BufRead, BufReader, Write};
+        use std::process::Stdio;
+        let Some(exe) = find_muse() else { return };
+        let Ok(mut child) = hidden(exe.to_str().unwrap_or_default()).arg("serve")
+            .current_dir(std::env::temp_dir()).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn() else { return };
+        let (mut stdin, out) = match (child.stdin.take(), child.stdout.take()) { (Some(a), Some(b)) => (a, b), _ => { let _ = child.kill(); return } };
+        let mut buf = BufReader::new(out);
+        let mut line = String::new();
+        let mut send = |s: &str| { let _ = stdin.write_all(s.as_bytes()); let _ = stdin.flush(); };
+        send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"clientInfo\":{\"name\":\"litepilot\",\"version\":\"1\"}}}\n");
+        // Wait for the initialize answer (skipping any notifications), then ask for the models.
+        loop {
+            if buf.read_line(&mut line).unwrap_or(0) == 0 { let _ = child.kill(); let _ = child.wait(); return }
+            if line.contains("\"id\":1") { break }
+            line.clear();
+        }
+        send("{\"jsonrpc\":\"2.0\",\"method\":\"initialized\"}\n");
+        send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"model/list\",\"params\":{}}\n");
+        let mut list: Vec<String> = Vec::new();
+        loop {
+            if buf.read_line(&mut line).unwrap_or(0) == 0 { break }
+            if line.contains("\"id\":2") {
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) {
+                    list = v["result"]["models"].as_array().map(|a| a.iter().filter_map(|m| m["modelId"].as_str().map(String::from)).collect()).unwrap_or_default();
+                }
+                break;
+            }
+            line.clear();
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+        if list.is_empty() { return; }
+        let _ = std::fs::create_dir_all(muse_dir());
+        let _ = std::fs::write(muse_dir().join("models.json"), serde_json::to_string(&list).unwrap_or_default());
+        *MUSE_MODELS.lock().unwrap_or_else(|e| e.into_inner()) = list;
+    });
+}
+
 /// A command that runs the CLI `kind`. None when it isn't installed.
 pub fn command(kind: &str) -> Option<std::process::Command> {
     Some(hidden(find(kind)?.to_str()?))

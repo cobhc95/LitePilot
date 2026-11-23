@@ -337,7 +337,7 @@ fn chip_label(p: &Profile) -> String {
         ("gemini", true) => "GEMINI".into(),
         ("gemini", false) => p.model.trim_start_matches("gemini-").to_uppercase(),
         ("meta", true) => "META".into(),
-        ("meta", false) => p.model.trim_start_matches("muse-").to_uppercase(),
+        ("meta", false) => p.model.trim_start_matches("muse-").split('-').next().unwrap_or(&p.model).to_uppercase(),
         (_, true) => p.name.clone(),
         (_, false) => p.model.clone(),
     }
@@ -1294,9 +1294,11 @@ pub fn model_list(p: &Profile) -> Vec<(String, String)> {
         if !p.model.is_empty() && !v.iter().any(|m| m.1 == p.model) { v.insert(0, (p.model.clone(), p.model.clone())); }
         std::iter::once(("Default".to_string(), String::new())).chain(v).collect()
     } else if p.kind == "meta" {
-        // Meta chat isn't connected yet: only Default (plus the saved model, if any).
-        if p.model.is_empty() { vec![("Default".to_string(), String::new())] }
-        else { vec![("Default".to_string(), String::new()), (p.model.clone(), p.model.clone())] }
+        // What the signed-in account offers (`muse serve model/list`, cached); the one in use stays listed.
+        cli::refresh_muse_models();
+        let mut v: Vec<(String, String)> = cli::muse_models().into_iter().map(|id| (cli::muse_label(&id), id)).collect();
+        if !p.model.is_empty() && !v.iter().any(|m| m.1 == p.model) { v.insert(0, (cli::muse_label(&p.model), p.model.clone())); }
+        std::iter::once(("Default".to_string(), String::new())).chain(v).collect()
     } else if !p.is_login() {
         // API accounts: the models the provider listed for this key (see core::models), with the current one kept even if unlisted.
         api_models(p).into_iter().map(|m| (m.name, m.id)).collect()
@@ -1325,7 +1327,8 @@ pub fn effort_choices(p: &Profile) -> Vec<String> {
     if p.kind == "gemini" {
         // The effort levels the chosen model has (none for a model without variants, or on Default).
         if let Some(g) = cli::gemini_groups().into_iter().find(|g| g.key == p.model) { v.extend(g.efforts.into_iter().map(|e| e.0)); }
-    } else if p.is_login() { v.extend(["low", "medium", "high"].map(String::from)); }
+    } else if p.kind == "meta" { v.extend(["minimal", "low", "medium", "high", "xhigh", "max"].map(String::from)); }
+    else if p.is_login() { v.extend(["low", "medium", "high"].map(String::from)); }
     else { v.extend(crate::core::models::efforts_for(&app().data, &p.id, &p.model)); }
     v
 }
