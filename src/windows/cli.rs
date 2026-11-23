@@ -115,9 +115,8 @@ pub fn muse_models() -> Vec<String> {
 /// Asks `muse serve model/list` in the background, at most once an hour (and once per launch), once signed in.
 pub fn refresh_muse_models() {
     {
-        let mut at = MUSE_MODELS_AT.lock().unwrap_or_else(|e| e.into_inner());
+        let at = MUSE_MODELS_AT.lock().unwrap_or_else(|e| e.into_inner());
         if at.is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(3600)) || !is_signed_in("meta") { return; }
-        *at = Some(std::time::Instant::now());
     }
     std::thread::spawn(|| {
         use std::io::{BufRead, BufReader, Write};
@@ -129,17 +128,17 @@ pub fn refresh_muse_models() {
         let mut buf = BufReader::new(out);
         let mut line = String::new();
         let mut send = |s: &str| { let _ = stdin.write_all(s.as_bytes()); let _ = stdin.flush(); };
-        send("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"clientInfo\":{\"name\":\"litepilot\",\"version\":\"1\"}}}\n");
         // Wait for the initialize answer (skipping any notifications), then ask for the models.
         loop {
+            line.clear();
             if buf.read_line(&mut line).unwrap_or(0) == 0 { let _ = child.kill(); let _ = child.wait(); return }
             if line.contains("\"id\":1") { break }
-            line.clear();
         }
         send("{\"jsonrpc\":\"2.0\",\"method\":\"initialized\"}\n");
         send("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"model/list\",\"params\":{}}\n");
         let mut list: Vec<String> = Vec::new();
         loop {
+            line.clear();
             if buf.read_line(&mut line).unwrap_or(0) == 0 { break }
             if line.contains("\"id\":2") {
                 if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) {
@@ -147,7 +146,6 @@ pub fn refresh_muse_models() {
                 }
                 break;
             }
-            line.clear();
         }
         let _ = child.kill();
         let _ = child.wait();
@@ -155,6 +153,7 @@ pub fn refresh_muse_models() {
         let _ = std::fs::create_dir_all(muse_dir());
         let _ = std::fs::write(muse_dir().join("models.json"), serde_json::to_string(&list).unwrap_or_default());
         *MUSE_MODELS.lock().unwrap_or_else(|e| e.into_inner()) = list;
+        *MUSE_MODELS_AT.lock().unwrap_or_else(|e| e.into_inner()) = Some(std::time::Instant::now());
     });
 }
 
