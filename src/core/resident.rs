@@ -62,13 +62,13 @@ pub fn parse(line: &str) -> Rpc {
 }
 
 pub fn request(id: u64, method: &str, params: Value) -> String {
-    json!({"id": id, "method": method, "params": params}).to_string() + "\n"
+    json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}).to_string() + "\n"
 }
 
-pub fn notification(method: &str) -> String { json!({"method": method}).to_string() + "\n" }
+pub fn notification(method: &str) -> String { json!({"jsonrpc": "2.0", "method": method}).to_string() + "\n" }
 
 /// Declines something the server asks for; this app never grants tools.
-pub fn decline(id: &Value) -> String { json!({"id": id, "error": {"code": -32601, "message": "not supported"}}).to_string() + "\n" }
+pub fn decline(id: &Value) -> String { json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32601, "message": "not supported"}}).to_string() + "\n" }
 
 /// Answers an ACP permission request (Gemini asking to run a tool): this app never grants tools. It picks the
 /// request's own "reject" option, so the model carries on and answers without the tool; only a request with no
@@ -78,7 +78,7 @@ pub fn deny_permission(id: &Value, request: &Value) -> String {
         .and_then(|a| a.iter().find(|o| o["kind"].as_str().is_some_and(|k| k.starts_with("reject"))))
         .and_then(|o| o["optionId"].as_str());
     let outcome = match reject { Some(o) => json!({"outcome": "selected", "optionId": o}), None => json!({"outcome": "cancelled"}) };
-    json!({"id": id, "result": {"outcome": outcome}}).to_string() + "\n"
+    json!({"jsonrpc": "2.0", "id": id, "result": {"outcome": outcome}}).to_string() + "\n"
 }
 
 #[cfg(test)]

@@ -38,6 +38,8 @@ struct Menu {
     /// The plan usage block above Effort (empty when not shown), and the reading it was drawn from.
     usage: RECT,
     usage_seen: i64,
+    /// How many Muse models were listed when the menu opened, so an arriving catalog redraws it.
+    muse_seen: usize,
 }
 
 /// The service whose plan usage the menu shows: the account in use, if it's a Claude or ChatGPT sign-in.
@@ -55,8 +57,10 @@ fn usage_kind() -> Option<&'static str> {
 }
 
 /// Codex and Gemini can be asked any time; ask when the reading is missing or over a minute old.
+/// Meta has no usage endpoint LitePilot polls; its reading arrives with replies (`usage/changed`).
 fn want_usage() {
     let Some(kind) = usage_kind() else { return };
+    if kind == "meta" { return }
     if kind != "claude" && crate::core::usage::get(kind).is_none_or(|u| crate::core::usage::now() - u.at > 60) {
         if kind == "codex" { super::cli::refresh_codex_usage(); } else { super::cli::refresh_agy_usage(); }
     }
@@ -380,7 +384,7 @@ pub fn toggle() {
             RegisterClassW(&wc);
         });
         want_usage();
-        let mut m = Menu { hwnd: std::ptr::null_mut(), query: String::new(), sel: false, models: load_models(), makers: false, items: vec![], cursor: 0, top: 0, rects: vec![], search: std::mem::zeroed(), usage: std::mem::zeroed(), usage_seen: 0 };
+        let mut m = Menu { hwnd: std::ptr::null_mut(), query: String::new(), sel: false, models: load_models(), makers: false, items: vec![], cursor: 0, top: 0, rects: vec![], search: std::mem::zeroed(), usage: std::mem::zeroed(), usage_seen: 0, muse_seen: super::cli::muse_models().len() };
         m.refresh(true);
         let (w_, h_) = m.layout();
         let mut hr: RECT = std::mem::zeroed();
@@ -750,7 +754,7 @@ unsafe fn paint(h: HWND, dc: HDC, m: &Menu) {
         match crate::core::usage::get(kind) {
             None => {
                 glyph("\u{E9D2}", ur.top, ur.bottom);
-                let msg = if kind == "claude" { "Usage shows after your next reply" } else { "Checking usage\u{2026}" };
+                let msg = if kind == "claude" || kind == "meta" { "Usage shows after your next reply" } else { "Checking usage\u{2026}" };
                 let o = SelectObject(dc, a.small_font() as _);
                 text(dc, msg, RECT { left: lx + s(32), top: ur.top, right: rx, bottom: ur.bottom }, a.theme.muted, DT_LEFT | DT_END_ELLIPSIS);
                 SelectObject(dc, o);
@@ -884,11 +888,21 @@ unsafe extern "system" fn proc_(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LR
             0
         }
         WM_TIMER => {
+            // A new usage reading redraws the menu; a Muse catalog that arrives late does too.
             let changed = MENU.with_borrow(|m| m.as_ref().is_some_and(|m| {
                 let at = usage_kind().and_then(crate::core::usage::get).map_or(0, |u| u.at);
-                at != m.usage_seen
+                at != m.usage_seen || super::cli::muse_models().len() != m.muse_seen
             }));
-            if changed { redraw(); }
+            if changed {
+                MENU.with_borrow_mut(|m| if let Some(m) = m.as_mut() {
+                    let at = usage_kind().and_then(crate::core::usage::get).map_or(0, |u| u.at);
+                    m.usage_seen = at;
+                    m.muse_seen = super::cli::muse_models().len();
+                    m.models = load_models();
+                    m.refresh(false);
+                });
+                redraw();
+            }
             0
         }
         WM_MOUSEACTIVATE => MA_NOACTIVATE as isize,
