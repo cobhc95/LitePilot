@@ -94,13 +94,17 @@ static MUSE_MODELS_AT: std::sync::Mutex<Option<std::time::Instant>> = std::sync:
 
 fn muse_dir() -> PathBuf { env_path("LOCALAPPDATA", r"LitePilot\Muse") }
 
-/// The model's short name for menus: `muse-wonder-1.0` becomes `Wonder`, `muse-spark-1.3` becomes `Spark`.
+/// The model's short name for menus, with its version: `muse-spark-1.3` becomes `Spark 1.3`.
+/// A `-contributor` id keeps its lane in the name, so it never reads as the plain twin.
 pub fn muse_label(id: &str) -> String {
     let t = id.strip_prefix("muse-").unwrap_or(id);
-    let w: String = t.chars().take_while(|c| c.is_ascii_alphabetic()).collect();
-    let w = if w.is_empty() { t.to_string() } else { w };
-    let mut c = w.chars();
-    match c.next() { Some(f) => f.to_uppercase().collect::<String>() + &c.as_str().to_lowercase(), None => w.clone() }
+    let parts: Vec<&str> = t.split('-').collect();
+    let w: String = parts.first().map(|p| p.chars().take_while(|c| c.is_ascii_alphabetic()).collect()).unwrap_or_default();
+    let mut out = match w.chars().next() { Some(f) => f.to_uppercase().collect::<String>() + &w.chars().skip(1).collect::<String>().to_lowercase(), None => w.clone() };
+    // The version is the digit piece after the family (`1.3`, `1.0`, ...), if there is one.
+    if let Some(v) = parts.iter().skip(1).find(|p| p.chars().next().is_some_and(|c| c.is_ascii_digit())) { out.push(' '); out.push_str(v); }
+    if parts.iter().any(|p| *p == "contributor") { out.push_str(" Contributor"); }
+    out
 }
 
 /// What `muse serve model/list` last reported (kept in memory and in a small file). Empty until the first check.
@@ -477,6 +481,16 @@ pub use super::resident::{set_diag_tools, set_memory_tool, claude_memory_dir, co
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn muse_labels_keep_version_and_lane() {
+        assert_eq!(super::muse_label("muse-wonder-1.0"), "Wonder 1.0");
+        assert_eq!(super::muse_label("muse-ember-1.0"), "Ember 1.0");
+        assert_eq!(super::muse_label("muse-spark-1.3"), "Spark 1.3");
+        // Two versions of a family must never read the same in the menu.
+        assert_ne!(super::muse_label("muse-spark-1.3"), super::muse_label("muse-spark-1.2"));
+        assert_eq!(super::muse_label("muse-spark-1.3-contributor"), "Spark 1.3 Contributor");
+        assert_eq!(super::muse_label("muse-spark"), "Spark");
+    }
     #[test]
     #[ignore = "needs a signed-in Muse on this machine"]
     fn muse_catalog_lists_models() {
