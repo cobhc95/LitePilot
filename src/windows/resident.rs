@@ -378,6 +378,7 @@ fn system_with(search: bool, standing: &str, diag: bool) -> String {
 /// (a new or different chat was opened), when a clean one is made ready for it. Does nothing during a reply.
 #[allow(clippy::too_many_arguments)]
 pub fn warm(kind: &str, model: &str, effort: &str, search: bool, memory: &str, engine: bool, cwd: &Path, fresh: bool, spare_standing: Option<String>) {
+    if kind == "meta" { return; } // Meta chat isn't connected yet; sign-in only.
     if super::cli::find(kind).is_none() { return; }
     if let (false, Some(st)) = (search, spare_standing) { ensure_spare(kind, model, effort, st, engine, cwd); }
     let (kind, model, effort, memory, cwd) = (kind.to_string(), model.to_string(), effort.to_string(), memory.to_string(), cwd.to_path_buf());
@@ -525,6 +526,7 @@ fn turn_codex(s: &mut Server, model: &str, effort: &str, prompt: &str, media: &[
 /// holds the earlier turns only the new message goes; otherwise the whole conversation is sent again.
 #[allow(clippy::too_many_arguments)]
 pub fn run(kind: &str, model: &str, effort: &str, search: bool, memory: &str, engine: bool, turns: &[Msg], extra: &str, media: &[PathBuf], cwd: &Path, sink: &dyn Fn(Event)) {
+    if kind == "meta" { return sink(Event::Error("Meta chat isn't connected yet. Open Settings, then Accounts, then Meta to sign in.".into())); }
     if super::cli::find(kind).is_none() { return sink(Event::Error("Not signed in yet. Open Settings and click Sign in.".into())); }
     let Some(last) = turns.last() else { return };
     let prev = &turns[..turns.len() - 1];

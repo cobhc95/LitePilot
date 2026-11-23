@@ -55,7 +55,7 @@ const CLOSE_STEPS: [u32; 14] = [1, 2, 3, 5, 10, 15, 20, 30, 45, 60, 90, 120, 180
 enum Page { Home, Subs, Login(&'static str), Api, Models, Startup, Appearance, Keys, Memory, ChatMem, ManageMem, Tidy, ImpExp, Limits, Data, Backup }
 
 #[derive(Clone, Copy, PartialEq)]
-enum Icon { G(&'static str), Chatgpt, Claude, Gemini }
+enum Icon { G(&'static str), Chatgpt, Claude, Gemini, Meta }
 
 #[derive(Clone, Copy, PartialEq)]
 enum Tog { Share, Copilot, CopilotHook, Autostart, Blur, Taskbar, Web, Wrap, Mic, OnTop, Trim, Close, Warm, TidyOn, TidyAuto, Updates, Arrows }
@@ -97,7 +97,7 @@ fn mem_help(st: &St) -> String {
         Some(Kind::Pick(Pick::MemLimit)) => "The most facts LitePilot will keep. \u{2190} \u{2192} change; lowering it never deletes facts you already have.".into(),
         Some(Kind::Nav(Page::ImpExp)) => "Bring facts in from the clipboard, get the prompt that asks an AI for its facts, or save a text file to Downloads.".into(),
         Some(Kind::Nav(Page::Tidy)) => "Off by default. Uses a model you choose to merge repeated facts, after you review them.".into(),
-        Some(Kind::Nav(Page::Subs)) => "Sign in to ChatGPT, Claude, or Gemini with your plan or Google account, or add an API key.".into(),
+        Some(Kind::Nav(Page::Subs)) => "Sign in to ChatGPT, Claude, Gemini, or Meta with your plan or account, or add an API key.".into(),
         Some(Kind::Nav(Page::Limits)) => "The most facts kept, and whether every account shares one list.".into(),
         Some(Kind::Nav(Page::ManageMem)) => "See what is remembered, search it, delete one, or clear everything.".into(),
         Some(Kind::Nav(Page::Models)) => "Choose which of this provider's models appear in the model menu, so the list stays short.".into(),
@@ -369,7 +369,7 @@ unsafe extern "system" fn proc_(h: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LR
             let kind = with(|st| match st.page { Page::Login(k) if k.as_ptr() as isize == lp => Some(k), _ => None }).flatten();
             if let Some(k) = kind {
                 // Asked here, outside any borrow of the settings state.
-                let (name, mb) = match k { "claude" => ("Claude Code", 330), "gemini" => ("Google Antigravity CLI", 250), _ => ("Codex", 330) };
+                let (name, mb) = match k { "claude" => ("Claude Code", 330), "gemini" => ("Google Antigravity CLI", 250), "meta" => ("Muse Code", 100), _ => ("Codex", 330) };
                 let t = format!("Signing in needs the official {name} app.\n\nDownload and install it now? It takes about {mb} MB of disk space, uses no memory while idle, and comes from:\n{}", cli::install_url(k));
                 if message(h, &t, MB_YESNO | MB_ICONQUESTION) == IDYES {
                     with(|st| start_signin(h, k, st));

@@ -9,6 +9,7 @@ pub(super) fn page_title(p: Page) -> &'static str {
         Page::Subs => "Accounts",
         Page::Login("claude") => "Claude",
         Page::Login("gemini") => "Gemini",
+        Page::Login("meta") => "Meta",
         Page::Login(_) => "ChatGPT",
         Page::Api => "API key",
         Page::Models => "Models in the menu",
@@ -169,7 +170,7 @@ pub(super) fn rows_for(page: Page, st: &St, query: &str) -> Vec<Row> {
     let q = query.trim().to_lowercase();
     match page {
         Page::Home => vec![
-            row(g("\u{E77B}"), "Accounts", "Sign in with ChatGPT, Claude, Gemini, or add an API key", Kind::Nav(Page::Subs)),
+            row(g("\u{E77B}"), "Accounts", "Sign in with ChatGPT, Claude, Gemini, Meta, or add an API key", Kind::Nav(Page::Subs)),
             row(g("\u{E790}"), "Look and feel", "Colors, font, text size", Kind::Nav(Page::Appearance)),
             row(g("\u{E7E8}"), "Keys and startup", "Open shortcut, Copilot key, start with Windows, every other key", Kind::Nav(Page::Startup)),
             row(g("\u{E8B7}"), "Memory and data", "What it remembers, where files live, back up, delete", Kind::Nav(Page::Data)),
@@ -183,16 +184,19 @@ pub(super) fn rows_for(page: Page, st: &St, query: &str) -> Vec<Row> {
             row(Icon::Chatgpt, "ChatGPT", if c.active == "codex" { "In use. Sign in with your plan" } else { "Sign in with your plan" }, Kind::Nav(Page::Login("codex"))),
             row(Icon::Claude, "Claude", if c.active == "claude" { "In use. Sign in with your plan" } else { "Sign in with your plan" }, Kind::Nav(Page::Login("claude"))),
             row(Icon::Gemini, "Gemini", if c.active == "gemini" { "In use. Sign in with your Google account" } else { "Sign in with your Google account" }, Kind::Nav(Page::Login("gemini"))),
+            row(Icon::Meta, "Meta", if c.active == "meta" { "In use. Sign in with your Meta account" } else { "Sign in with your Meta account" }, Kind::Nav(Page::Login("meta"))),
             row(g("\u{E8D7}"), "API key", "OpenCode, DeepSeek, OpenAI, and others", Kind::Nav(Page::Api)),
         ],
         Page::Login(k) => {
-            let name = match k { "claude" => "Claude", "gemini" => "Gemini", _ => "ChatGPT" };
+            let name = match k { "claude" => "Claude", "gemini" => "Gemini", "meta" => "Meta", _ => "ChatGPT" };
             let mut v = vec![row(g(if st.signed_in { "\u{E73E}" } else { "\u{E783}" }), if st.signed_in { "Signed in" } else { "Not signed in" }, &st.login_note, Kind::Info)];
             v.push(row(g("\u{E77B}"), &if st.signed_in { format!("Use {name} for chats") } else { format!("Sign in to {name}") }, if st.signed_in { "Chats will use this account" } else { "Opens your browser" }, Kind::Run(Run::SignIn)));
             v.push(row(g("\u{E7E8}"), "Sign out", "", Kind::Run(Run::SignOut)));
-            let tool = match k { "claude" => "Claude Code", "gemini" => "Antigravity CLI", _ => "Codex" };
+            let tool = match k { "claude" => "Claude Code", "gemini" => "Antigravity CLI", "meta" => "Muse Code", _ => "Codex" };
             let note = if k == "gemini" {
                 "Uses your Google account through the official Antigravity CLI, which keeps your sign-in safe. The first time, it downloads once (about 250 MB of disk). It stays ready between messages; change that under Speed and memory use. Gemini decides for itself when to search the web. Google's terms limit third-party use of Antigravity sign-ins, so use it at your own risk. To sign out fully, type /logout in Antigravity."
+            } else if k == "meta" {
+                "Uses your Meta plan through the official Muse Code app (`muse`), which keeps your sign-in safe. The first time, it downloads once (about 100 MB of disk) and puts `muse` on your PATH. Sign-in opens your browser to approve a code. Chat isn't connected for Meta yet; this page handles sign-in only."
             } else { "" };
             if !note.is_empty() { v.push(hint(note)); } else {
                 v.push(hint(&format!("Uses your {name} plan through the official {tool} app, which keeps your sign-in safe. The first time, it downloads once (about 330 MB of disk). It stays ready between messages; change that under Speed and memory use.")));
@@ -377,7 +381,7 @@ pub(super) fn rows_for(page: Page, st: &St, query: &str) -> Vec<Row> {
 /// Every setting with a name, for the home search: (page, position among that page's selectable rows, title, where).
 pub(super) fn index(st: &St) -> Vec<(Page, usize, String, String)> {
     let mut out = vec![];
-    for p in [Page::Login("codex"), Page::Login("claude"), Page::Login("gemini"), Page::Api, Page::Startup, Page::Appearance, Page::Keys, Page::Memory, Page::ChatMem, Page::Data, Page::Backup] {
+    for p in [Page::Login("codex"), Page::Login("claude"), Page::Login("gemini"), Page::Login("meta"), Page::Api, Page::Startup, Page::Appearance, Page::Keys, Page::Memory, Page::ChatMem, Page::Data, Page::Backup] {
         let rows = rows_for(p, st, "");
         for (i, r) in rows.iter().filter(|r| r.kind.selectable()).enumerate() {
             out.push((p, i, r.title.clone(), page_title(p).to_string()));

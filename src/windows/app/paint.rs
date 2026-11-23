@@ -82,12 +82,23 @@ pub(super) fn mix_colors(x: u32, y: u32, t: f32) -> u32 {
     })
 }
 
-/// Draws the Claude spark or the ChatGPT knot, `size` px tall, left edge at `x`, centered on `cy`.
+/// Draws the Claude spark, the ChatGPT knot, the Gemini sparkle, or the Meta loop, `size` px tall,
+/// left edge at `x`, centered on `cy`.
 pub unsafe fn draw_logo(dc: HDC, kind: &str, x: i32, cy: i32, size: i32, color: u32) {
     let pen = CreatePen(PS_SOLID, 1.max(size / 9), color);
     let old = SelectObject(dc, pen as _);
     let (cx, r) = (x + size / 2, size as f32 / 2.0);
-    if kind == "claude" {
+    if kind == "meta" {
+        // The Meta AI loop: a lemniscate (infinity) curve, drawn as one closed polyline.
+        let a = r;
+        let pts: Vec<POINT> = (0..=64).map(|i| {
+            let t = i as f32 * std::f32::consts::TAU / 64.0;
+            let (s, c) = (t.sin(), t.cos());
+            let d = 1.0 + s * s;
+            POINT { x: cx + (a * c / d) as i32, y: cy + (a * s * c / d) as i32 }
+        }).collect();
+        Polyline(dc, pts.as_ptr(), pts.len() as i32);
+    } else if kind == "claude" {
         for k in 0..4 {
             let t = k as f32 * std::f32::consts::FRAC_PI_4;
             let (dx, dy) = ((r * t.cos()) as i32, (r * t.sin()) as i32);

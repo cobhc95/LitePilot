@@ -36,6 +36,8 @@ fn env_path(var: &str, rest: &str) -> PathBuf {
 pub fn default_path(kind: &str) -> PathBuf {
     if kind == "claude" {
         env_path("USERPROFILE", r".local\bin\claude.exe")
+    } else if kind == "meta" {
+        env_path("LOCALAPPDATA", r"Programs\muse\muse.cmd")
     } else {
         env_path("LOCALAPPDATA", r"Programs\OpenAI\Codex\bin\codex.exe")
     }
@@ -51,6 +53,38 @@ fn find_agy() -> Option<PathBuf> {
     let d = env_path("LOCALAPPDATA", r"agy\bin\agy.exe");
     if d.is_file() { return Some(d); }
     std::env::split_paths(&std::env::var_os("PATH")?).map(|p| p.join("agy.exe")).find(|p| p.is_file())
+}
+
+// ---- Meta Muse Code CLI (`muse`): the `muse.cmd` launcher Meta's installer puts on the PATH. ----
+// The launcher downloads the real binary (`muse-bin-<version>.exe`) beside itself on first run.
+
+/// The installed `muse`: the downloaded binary beside the launcher, else the launcher itself.
+fn find_muse() -> Option<PathBuf> {
+    let mut dirs = vec![env_path("LOCALAPPDATA", r"Programs\muse")];
+    if let Some(paths) = std::env::var_os("PATH") { dirs.extend(std::env::split_paths(&paths)); }
+    for d in dirs {
+        for name in ["muse.exe", "muse.cmd", "muse"] {
+            let p = d.join(name);
+            if p.is_file() {
+                // Beside the launcher sits the real `muse-bin-<version>.exe` it downloaded; use the newest.
+                let mut bins: Vec<PathBuf> = p.parent().and_then(|dir| dir.read_dir().ok())
+                    .map(|rd| rd.flatten()
+                        .filter(|e| e.file_name().to_string_lossy().starts_with("muse-bin-") && e.file_name().to_string_lossy().ends_with(".exe"))
+                        .map(|e| e.path()).collect()).unwrap_or_default();
+                bins.sort_by_key(|b| b.metadata().and_then(|m| m.modified()).unwrap_or(std::time::SystemTime::UNIX_EPOCH));
+                return Some(bins.into_iter().last().unwrap_or(p));
+            }
+        }
+    }
+    None
+}
+
+/// Where Muse keeps its sign-in (`~/.config/muse/auth.json`), honoring XDG_CONFIG_HOME.
+fn muse_auth_file() -> PathBuf {
+    if let Ok(x) = std::env::var("XDG_CONFIG_HOME") {
+        if !x.trim().is_empty() { return PathBuf::from(x).join("muse").join("auth.json"); }
+    }
+    env_path("USERPROFILE", r".config\muse\auth.json")
 }
 
 /// A command that runs the CLI `kind`. None when it isn't installed.
@@ -166,6 +200,7 @@ fn gemini_sign_in() {
 
 pub fn find(kind: &str) -> Option<PathBuf> {
     if kind == "gemini" { return find_agy(); }
+    if kind == "meta" { return find_muse(); }
     let d = default_path(kind);
     if d.exists() { return Some(d); }
     if kind == "codex" {
@@ -305,12 +340,15 @@ pub fn install_url(kind: &str) -> &'static str {
     match kind {
         "claude" => "https://claude.ai/install.ps1",
         "gemini" => "https://antigravity.google/cli/install.ps1",
+        "meta" => "https://dev.meta.ai/install.ps1",
         _ => "https://releases.openai.com/codex/channels/latest",
     }
 }
 
 pub fn is_signed_in(kind: &str) -> bool {
     if kind == "gemini" { return find(kind).is_some() && agy_marker().is_file(); }
+    // Muse has no status command: the sign-in is the file the CLI writes on `muse login` (removed on logout).
+    if kind == "meta" { return find(kind).is_some() && muse_auth_file().metadata().is_ok_and(|m| m.is_file() && m.len() > 0); }
     let Some(exe) = find(kind) else { return false };
     let mut c = hidden(exe.to_str().unwrap_or_default());
     if kind == "claude" { c.args(["auth", "status"]); } else { c.args(["login", "status"]); }

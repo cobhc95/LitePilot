@@ -26,6 +26,8 @@ pub fn choices(profiles: &[Profile]) -> Vec<(String, String, String)> {
             for m in ["haiku", "sonnet", "opus"] { out.push((p.id.clone(), m.to_string(), format!("{} \u{00B7} {m}", p.name))); }
         } else if p.kind == "gemini" {
             // Not offered: Antigravity's one-shot mode can't take a long list on stdin.
+        } else if p.kind == "meta" {
+            // Not offered: Meta chat isn't connected yet.
         } else if p.kind == "codex" {
             for m in cli::codex_models() { out.push((p.id.clone(), m.clone(), format!("{} \u{00B7} {}", p.name, m.trim_start_matches("gpt-")))); }
         } else if !p.model.is_empty() {
@@ -54,6 +56,7 @@ fn oneshot(c: &Ctx, user: &str) -> Result<String, String> {
     let mut cmd = cli::command(&p.kind).ok_or("Not signed in yet.")?;
     cmd.current_dir(&cwd).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
     if p.kind == "gemini" { return Err("Tidy isn't available with Gemini. Choose another account for tidying.".into()); }
+    if p.kind == "meta" { return Err("Tidy isn't available with Meta. Choose another account for tidying.".into()); }
     let plain_stdout = p.kind == "claude";
     let input = if p.kind == "claude" {
         cmd.args(["-p", "--tools", "", "--no-session-persistence", "--strict-mcp-config", "--setting-sources", "", "--disable-slash-commands", "--system-prompt", tidy::SYSTEM]);

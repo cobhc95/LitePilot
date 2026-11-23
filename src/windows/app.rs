@@ -336,6 +336,8 @@ fn chip_label(p: &Profile) -> String {
         ("codex", false) => p.model.trim_start_matches("gpt-").to_uppercase(),
         ("gemini", true) => "GEMINI".into(),
         ("gemini", false) => p.model.trim_start_matches("gemini-").to_uppercase(),
+        ("meta", true) => "META".into(),
+        ("meta", false) => p.model.trim_start_matches("muse-").to_uppercase(),
         (_, true) => p.name.clone(),
         (_, false) => p.model.clone(),
     }
@@ -344,7 +346,7 @@ fn chip_label(p: &Profile) -> String {
 /// The logo to draw beside the chip, only while the button is showing the chip (not "Thinking" or "Copied").
 fn chip_logo(a: &App) -> Option<&'static str> {
     let p = a.cfg.active_profile();
-    let kind = match p.kind.as_str() { "claude" => "claude", "codex" => "codex", "gemini" => "gemini", _ => return None };
+    let kind = match p.kind.as_str() { "claude" => "claude", "codex" => "codex", "gemini" => "gemini", "meta" => "meta", _ => return None };
     (get_text(a.header) == chip_label(p)).then_some(kind)
 }
 
@@ -1291,6 +1293,10 @@ pub fn model_list(p: &Profile) -> Vec<(String, String)> {
         let mut v: Vec<(String, String)> = cli::gemini_groups().into_iter().map(|g| (g.name, g.key)).collect();
         if !p.model.is_empty() && !v.iter().any(|m| m.1 == p.model) { v.insert(0, (p.model.clone(), p.model.clone())); }
         std::iter::once(("Default".to_string(), String::new())).chain(v).collect()
+    } else if p.kind == "meta" {
+        // Meta chat isn't connected yet: only Default (plus the saved model, if any).
+        if p.model.is_empty() { vec![("Default".to_string(), String::new())] }
+        else { vec![("Default".to_string(), String::new()), (p.model.clone(), p.model.clone())] }
     } else if !p.is_login() {
         // API accounts: the models the provider listed for this key (see core::models), with the current one kept even if unlisted.
         api_models(p).into_iter().map(|m| (m.name, m.id)).collect()
